@@ -162,14 +162,11 @@ export class CacheService {
     value: T,
     expiryMinutes: number = 5
   ): Promise<void> {
-    const ttl = expiryMinutes * 60 * 1000; // Convertir a milisegundos
+    const ttl = expiryMinutes * 60; // Convertir a segundos para Redis
     await this.setAsync(key, value, ttl);
     
-    // Programar limpieza automática
-    setTimeout(async () => {
-      await this.invalidateAsync(key);
-      console.log(`⏰ Cache expirado automáticamente: ${key}`);
-    }, ttl);
+    // Redis maneja la expiración automáticamente, no necesitamos setTimeout
+    console.log(`⏰ Cache configurado con expiración automática: ${key} (${expiryMinutes} min)`);
   }
 
   // 🎯 CACHE INTELIGENTE - Cache con invalidación por patrones

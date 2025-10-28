@@ -1,10 +1,15 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete, Query } from '@nestjs/common';
+import { Controller, Get, Post, Body, Patch, Param, Delete, Query, Res } from '@nestjs/common';
+import type { Response } from 'express';
 import { ReservationsService } from '../services/reservations.service';
 import { CreateReservationDto } from '../dto/create-reservation.dto';
+import { PdfService } from '../../pdf/pdf.service';
 
 @Controller('reservations')
 export class ReservationsController {
-  constructor(private readonly reservationsService: ReservationsService) {}
+  constructor(
+    private readonly reservationsService: ReservationsService,
+    private readonly pdfService: PdfService
+  ) {}
 
   @Post()
   create(@Body() createReservationDto: CreateReservationDto) {
@@ -70,5 +75,28 @@ export class ReservationsController {
   @Delete(':id')
   remove(@Param('id') id: string) {
     return this.reservationsService.remove(id);
+  }
+
+  @Get(':id/pdf')
+  async downloadPDF(@Param('id') id: string, @Res() res: Response) {
+    try {
+      const reservation = await this.reservationsService.findOne(id);
+      if (!reservation) {
+        return res.status(404).json({ error: 'Reserva no encontrada' });
+      }
+
+      const pdfBuffer = await this.pdfService.generateReservationPDF(reservation);
+      
+      res.set({
+        'Content-Type': 'application/pdf',
+        'Content-Disposition': `attachment; filename=reserva-${id}.pdf`,
+        'Content-Length': pdfBuffer.length,
+      });
+      
+      res.send(pdfBuffer);
+    } catch (error) {
+      console.error('Error generando PDF:', error);
+      res.status(500).json({ error: 'Error generando PDF' });
+    }
   }
 }

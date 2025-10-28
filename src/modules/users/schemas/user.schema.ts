@@ -19,11 +19,17 @@ export class User {
   @Prop({ required: true })
   password: string;
 
-  @Prop({ default: 'user', enum: ['user', 'admin'] })
-  role: string;
+  @Prop({ type: Types.ObjectId, ref: 'UserRole', required: true })
+  roleId: Types.ObjectId;
 
   @Prop()
   phoneNumber?: string;
+
+  @Prop({ type: Types.ObjectId, ref: 'DocumentType' })
+  documentType?: Types.ObjectId;
+
+  @Prop()
+  documentNumber?: string;
 
   @Prop({ default: true })
   isActive: boolean;

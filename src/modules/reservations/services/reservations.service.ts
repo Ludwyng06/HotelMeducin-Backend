@@ -3,25 +3,136 @@ import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { Reservation, ReservationDocument } from '../schemas/reservation.schema';
 import { CreateReservationDto } from '../dto/create-reservation.dto';
+import { RedisService } from '../../../config/redis.service';
+import { PdfService } from '../../pdf/pdf.service';
+import { EmailService } from '../../pdf/email.service';
+import { GuestsService } from '../../guests/services/guests.service';
+import { CreateGuestDto } from '../../guests/dto/guest.dto';
 
 @Injectable()
 export class ReservationsService {
   constructor(
     @InjectModel(Reservation.name) 
-    private reservationModel: Model<ReservationDocument>
+    private reservationModel: Model<ReservationDocument>,
+    private redisService: RedisService,
+    private pdfService: PdfService,
+    private emailService: EmailService,
+    private guestsService: GuestsService
   ) {}
 
   async create(createReservationDto: CreateReservationDto): Promise<Reservation> {
+    // 🔍 VALIDAR DUPLICADOS DE DOCUMENTOS
+    if (createReservationDto.guests && createReservationDto.guests.length > 0) {
+      await this.validateDocumentDuplicates(createReservationDto.guests);
+    }
+
+    // Normalizar y completar campos requeridos por el esquema
+    let guestCount = Number(
+      createReservationDto.guestCount ?? (createReservationDto.guests?.length ?? 1)
+    );
+    if (!Number.isFinite(guestCount) || guestCount < 1) guestCount = 1;
+
+    let maxCapacity = Number(createReservationDto.maxCapacity ?? guestCount);
+    if (!Number.isFinite(maxCapacity) || maxCapacity < 1) maxCapacity = guestCount;
+    // Asegurar coherencia
+    if (guestCount > maxCapacity) guestCount = maxCapacity;
+
     const createdReservation = new this.reservationModel({
       ...createReservationDto,
       userId: new Types.ObjectId(createReservationDto.userId),
       roomId: new Types.ObjectId(createReservationDto.roomId),
       checkInDate: new Date(createReservationDto.checkInDate),
       checkOutDate: new Date(createReservationDto.checkOutDate),
+      guestCount,
+      maxCapacity,
       serviceIds: createReservationDto.serviceIds?.map(id => new Types.ObjectId(id)) || []
     });
     
-    return createdReservation.save();
+    const savedReservation = await createdReservation.save();
+    
+    // 🧾 Registrar huéspedes asociados a la reserva (si vienen en el DTO)
+    if (createReservationDto.guests && createReservationDto.guests.length > 0) {
+      try {
+        const guestsPayload: CreateGuestDto[] = createReservationDto.guests.map((g: any) => ({
+          reservationId: savedReservation._id.toString(),
+          isMainGuest: Boolean(g.isMainGuest),
+          documentType: g.documentType,
+          documentNumber: g.documentNumber,
+          firstName: g.firstName,
+          lastName: g.lastName,
+          birthDate: new Date(g.birthDate).toISOString(),
+          nationality: g.nationality,
+          phoneNumber: g.phoneNumber,
+          email: g.email,
+          isCompleted: g.isCompleted ?? true,
+        }));
+        await Promise.all(guestsPayload.map(payload => this.guestsService.create(payload)));
+        console.log('👥 Huéspedes registrados para la reserva:', guestsPayload.length);
+      } catch (err) {
+        console.error('❌ Error registrando huéspedes de la reserva:', err);
+        // No interrumpir el flujo principal
+      }
+    }
+
+    // Invalidar cache de Redis para la habitación afectada
+    await this.redisService.invalidateRoomCache(createReservationDto.roomId);
+    await this.redisService.invalidateAvailableRoomsCache();
+    
+    // 🚀 MÉTRICAS EN TIEMPO REAL: Actualizar contadores
+    const today = new Date().toISOString().split('T')[0];
+    await this.redisService.incrementDailyReservations(today);
+    await this.redisService.addDailyRevenue(today, createReservationDto.totalPrice);
+    await this.redisService.incrementOccupiedRooms();
+    
+    // Métricas adicionales por categoría de habitación
+    const room = await this.reservationModel.findById(savedReservation._id).populate('roomId').exec();
+    if (room?.roomId) {
+      const categoryId = (room.roomId as any).categoryId;
+      if (categoryId) {
+        await this.redisService.incrementDailyReservations(`${today}:category:${categoryId}`);
+        console.log('📊 Métricas por categoría actualizadas:', categoryId);
+      }
+    }
+    
+    console.log('🗑️ Cache invalidado para habitación:', createReservationDto.roomId);
+    console.log('📊 Métricas actualizadas para nueva reserva');
+    console.log('💰 Ingreso registrado: $' + createReservationDto.totalPrice);
+    
+    // 📧 ENVÍO DE EMAIL CON PDF (incluye huéspedes registrados)
+    try {
+      const reservationWithDetails = await this.reservationModel
+        .findById(savedReservation._id)
+        .populate('userId')
+        .populate('roomId')
+        .exec();
+
+      if (reservationWithDetails && reservationWithDetails.userId) {
+        const userEmail = (reservationWithDetails.userId as any).email;
+        if (userEmail) {
+          // Cargar huéspedes asociados a la reserva y adjuntarlos al objeto a enviar al email
+          const guests = await this.guestsService.findByReservation(savedReservation._id.toString());
+          const reservationPayload = JSON.parse(JSON.stringify(reservationWithDetails));
+          reservationPayload.guests = (guests || []).map((g: any) => ({
+            firstName: g.firstName,
+            lastName: g.lastName,
+            documentType: g.documentType?.name || g.documentType,
+            documentNumber: g.documentNumber,
+            nationality: g.nationality,
+            phoneNumber: g.phoneNumber,
+            email: g.email,
+            isMainGuest: g.isMainGuest,
+          }));
+
+          await this.emailService.sendReservationConfirmation(reservationPayload, userEmail);
+          console.log('📧 Email de confirmación enviado a:', userEmail);
+        }
+      }
+    } catch (error) {
+      console.error('❌ Error enviando email de confirmación:', error);
+      // No lanzamos el error para no interrumpir la creación de la reserva
+    }
+    
+    return savedReservation;
   }
 
   async findAll(): Promise<Reservation[]> {
@@ -80,6 +191,15 @@ export class ReservationsService {
   async getOccupiedDatesByRoom(roomId: string): Promise<any[]> {
     console.log('🔍 Buscando fechas ocupadas para roomId:', roomId);
     
+    // 1. Intentar obtener del cache de Redis
+    const cachedDates = await this.redisService.getCachedRoomOccupiedDates(roomId);
+    if (cachedDates) {
+      console.log('📅 Fechas ocupadas obtenidas del cache:', cachedDates);
+      return cachedDates;
+    }
+    
+    // 2. Si no hay cache, consultar la base de datos
+    console.log('🗄️ Consultando base de datos...');
     const objectId = new Types.ObjectId(roomId);
     const reservations = await this.reservationModel
       .find({
@@ -107,6 +227,35 @@ export class ReservationsService {
     });
     
     console.log('📅 Fechas ocupadas generadas:', occupiedDates);
+    
+    // 3. Guardar en cache de Redis (10 minutos)
+    await this.redisService.cacheRoomOccupiedDates(roomId, occupiedDates, 600);
+    
     return occupiedDates;
+  }
+
+  // 🔍 VALIDAR DUPLICADOS DE DOCUMENTOS
+  private async validateDocumentDuplicates(guests: any[]): Promise<void> {
+    console.log('🔍 Validando duplicados de documentos...');
+    
+    // Verificar duplicados dentro del mismo grupo de huéspedes
+    const documentNumbers = guests.map(guest => guest.documentNumber).filter(Boolean);
+    const uniqueNumbers = new Set(documentNumbers);
+    
+    if (documentNumbers.length !== uniqueNumbers.size) {
+      throw new Error('No se permiten documentos duplicados en la misma reserva');
+    }
+
+    // Verificar duplicados en la base de datos
+    for (const guest of guests) {
+      if (guest.documentNumber) {
+        const exists = await this.guestsService.checkDocumentExists(guest.documentNumber);
+        if (exists) {
+          throw new Error(`El documento ${guest.documentNumber} ya está registrado en el sistema`);
+        }
+      }
+    }
+    
+    console.log('✅ Validación de duplicados completada');
   }
 }

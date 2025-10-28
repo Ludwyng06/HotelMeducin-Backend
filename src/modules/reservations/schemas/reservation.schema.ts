@@ -19,6 +19,12 @@ export class Reservation {
   @Prop({ required: true })
   checkOutDate: Date;
 
+  @Prop({ required: true })
+  guestCount: number;
+
+  @Prop({ required: true })
+  maxCapacity: number;
+
   @Prop({ required: true, min: 0 })
   totalPrice: number;
 

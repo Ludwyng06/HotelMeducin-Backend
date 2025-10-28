@@ -19,7 +19,12 @@ export class AuthService {
     }
 
     const user = await this.usersService.create(registerDto);
-    const payload = { email: user.email, sub: user._id, role: user.role };
+    const payload = { 
+      email: user.email, 
+      sub: user._id, 
+      role: (user.roleId as any)?.name || 'user',
+      roleId: user.roleId?._id 
+    };
     
     return {
       success: true,
@@ -30,7 +35,8 @@ export class AuthService {
           email: user.email,
           firstName: user.firstName,
           lastName: user.lastName,
-          role: user.role,
+          role: (user.roleId as any)?.name || 'user',
+          roleId: user.roleId?._id,
           phoneNumber: user.phoneNumber,
         },
       },
@@ -49,7 +55,12 @@ export class AuthService {
       throw new UnauthorizedException('Credenciales inválidas');
     }
 
-    const payload = { email: user.email, sub: user._id, role: user.role };
+    const payload = { 
+      email: user.email, 
+      sub: user._id, 
+      role: (user.roleId as any)?.name || 'user',
+      roleId: user.roleId?._id 
+    };
     
     return {
       success: true,
@@ -60,7 +71,8 @@ export class AuthService {
           email: user.email,
           firstName: user.firstName,
           lastName: user.lastName,
-          role: user.role,
+          role: (user.roleId as any)?.name || 'user',
+          roleId: user.roleId?._id,
           phoneNumber: user.phoneNumber,
         },
       },
@@ -90,7 +102,8 @@ export class AuthService {
         email: updatedUser.email,
         firstName: updatedUser.firstName,
         lastName: updatedUser.lastName,
-        role: updatedUser.role,
+        role: (updatedUser.roleId as any)?.name || 'user',
+        roleId: updatedUser.roleId?._id,
         phoneNumber: updatedUser.phoneNumber,
       },
       message: 'Perfil actualizado exitosamente'

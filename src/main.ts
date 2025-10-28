@@ -32,6 +32,11 @@ async function bootstrap() {
     new TransformInterceptor(),
   );
 
+  // Responder a /favicon.ico para evitar 404 de los navegadores
+  app.getHttpAdapter().get('/favicon.ico', (_req, res) => {
+    res.status(204).send();
+  });
+
   const port = process.env.PORT || 3000;
   await app.listen(port);
   

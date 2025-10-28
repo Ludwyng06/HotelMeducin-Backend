@@ -1,4 +1,4 @@
-import { IsEmail, IsString, IsOptional, IsEnum, MinLength } from 'class-validator';
+import { IsEmail, IsString, IsOptional, IsEnum, MinLength, IsMongoId } from 'class-validator';
 
 export class CreateUserDto {
   @IsEmail()
@@ -17,8 +17,8 @@ export class CreateUserDto {
   password: string;
 
   @IsOptional()
-  @IsEnum(['user', 'admin'])
-  role?: string;
+  @IsMongoId()
+  roleId?: string;
 
   @IsOptional()
   @IsString()

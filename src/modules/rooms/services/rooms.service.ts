@@ -4,12 +4,14 @@ import { Model, Types } from 'mongoose';
 import { Room, RoomDocument } from '../schemas/room.schema';
 import { RoomCategory, RoomCategoryDocument } from '../schemas/room-category.schema';
 import { CreateRoomDto } from '../dto/create-room.dto';
+import { RedisService } from '../../../config/redis.service';
 
 @Injectable()
 export class RoomsService {
   constructor(
     @InjectModel(Room.name) private roomModel: Model<RoomDocument>,
-    @InjectModel(RoomCategory.name) private roomCategoryModel: Model<RoomCategoryDocument>
+    @InjectModel(RoomCategory.name) private roomCategoryModel: Model<RoomCategoryDocument>,
+    private redisService: RedisService
   ) {}
 
   async create(createRoomDto: CreateRoomDto): Promise<Room> {
@@ -22,11 +24,39 @@ export class RoomsService {
   }
 
   async findAvailable(): Promise<Room[]> {
-    return this.roomModel.find({ isAvailable: true, isMaintenance: false }).populate('categoryId').exec();
+    try {
+      // Consultar directamente la base de datos (sin Redis temporalmente)
+      console.log('🗄️ Consultando base de datos para habitaciones disponibles...');
+      const rooms = await this.roomModel.find({ 
+        isAvailable: true, 
+        isMaintenance: false 
+      }).populate('categoryId').exec();
+      
+      console.log(`✅ ${rooms.length} habitaciones disponibles encontradas`);
+      return rooms;
+    } catch (error) {
+      console.error('❌ Error en findAvailable:', error);
+      throw error;
+    }
   }
 
   async findOne(id: string): Promise<Room | null> {
-    return this.roomModel.findById(id).populate('categoryId').exec();
+    try {
+      // Consultar directamente la base de datos (sin Redis temporalmente)
+      console.log('🗄️ Consultando base de datos para habitación:', id);
+      const room = await this.roomModel.findById(id).populate('categoryId').exec();
+      
+      if (room) {
+        console.log('✅ Habitación encontrada:', room.name);
+      } else {
+        console.log('❌ Habitación no encontrada:', id);
+      }
+      
+      return room;
+    } catch (error) {
+      console.error('❌ Error en findOne:', error);
+      throw error;
+    }
   }
 
   async findByRoomNumber(roomNumber: string): Promise<Room | null> {
@@ -34,8 +64,31 @@ export class RoomsService {
   }
 
   async findByCategory(categoryId: string): Promise<Room[]> {
+    // 1. Intentar obtener del cache de Redis
+    const cacheKey = `rooms:category:${categoryId}`;
+    const cachedRooms = await this.redisService.getCachedAvailableRooms();
+    if (cachedRooms && cachedRooms.length > 0) {
+      // Filtrar por categoría en el cache
+      const categoryRooms = cachedRooms.filter(room => 
+        room.categoryId?._id?.toString() === categoryId || 
+        room.categoryId?.toString() === categoryId
+      );
+      if (categoryRooms.length > 0) {
+        console.log('🏨 Habitaciones de categoría obtenidas del cache Redis:', categoryId);
+        return categoryRooms;
+      }
+    }
+    
+    // 2. Si no hay cache, consultar la base de datos
+    console.log('🗄️ Consultando base de datos para categoría:', categoryId);
     const objectId = new Types.ObjectId(categoryId);
-    return this.roomModel.find({ categoryId: objectId }).populate('categoryId').exec();
+    const rooms = await this.roomModel.find({ categoryId: objectId }).populate('categoryId').exec();
+    
+    // 3. Guardar en cache de Redis (5 minutos)
+    await this.redisService.cacheAvailableRooms(rooms, 300);
+    console.log('💾 Habitaciones de categoría guardadas en cache Redis:', categoryId);
+    
+    return rooms;
   }
 
   async findByFloor(floor: number): Promise<Room[]> {
@@ -74,7 +127,19 @@ export class RoomsService {
   }
 
   async update(id: string, updateData: Partial<Room>): Promise<Room | null> {
-    return this.roomModel.findByIdAndUpdate(id, updateData, { new: true }).populate('categoryId').exec();
+    const updatedRoom = await this.roomModel.findByIdAndUpdate(id, updateData, { new: true }).populate('categoryId').exec();
+    
+    if (updatedRoom) {
+      // Invalidar cache de Redis
+      await this.redisService.invalidateRoomCache(id);
+      await this.redisService.invalidateAvailableRoomsCache();
+      
+      // Actualizar cache con nuevos datos
+      await this.redisService.cacheRoomHash(id, updatedRoom, 600);
+      console.log('🗑️ Cache invalidado y actualizado para habitación:', id);
+    }
+    
+    return updatedRoom;
   }
 
   async updateAvailability(id: string, isAvailable: boolean): Promise<Room | null> {

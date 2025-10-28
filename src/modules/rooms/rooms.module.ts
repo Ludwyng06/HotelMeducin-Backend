@@ -6,6 +6,7 @@ import { RoomsController } from './controllers/rooms.controller';
 import { RoomCategoryController } from './controllers/room-category.controller';
 import { Room, RoomSchema } from './schemas/room.schema';
 import { RoomCategory, RoomCategorySchema } from './schemas/room-category.schema';
+import { RedisService } from '../../config/redis.service';
 
 @Module({
   imports: [
@@ -15,7 +16,7 @@ import { RoomCategory, RoomCategorySchema } from './schemas/room-category.schema
     ])
   ],
   controllers: [RoomsController, RoomCategoryController],
-  providers: [RoomsService, RoomCategoryService],
+  providers: [RoomsService, RoomCategoryService, RedisService],
   exports: [RoomsService, RoomCategoryService],
 })
 export class RoomsModule {}
