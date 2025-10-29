@@ -1,5 +1,5 @@
 import { Module } from '@nestjs/common';
-import { RedisAdvancedController } from './redis-advanced.controller';
+import { RedisAdvancedController } from '@controllers/redis-advanced.controller';
 import { RedisService } from '../../config/redis.service';
 
 @Module({

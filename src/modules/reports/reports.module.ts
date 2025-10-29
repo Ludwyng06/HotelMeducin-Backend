@@ -1,11 +1,11 @@
 import { Module } from '@nestjs/common';
 import { MongooseModule } from '@nestjs/mongoose';
-import { ReportsService } from './services/reports.service';
-import { ReportsController } from './controllers/reports.controller';
-import { User, UserSchema } from '../users/schemas/user.schema';
-import { Reservation, ReservationSchema } from '../reservations/schemas/reservation.schema';
-import { Room, RoomSchema } from '../rooms/schemas/room.schema';
-import { Service, ServiceSchema } from '../services/schemas/service.schema';
+import { ReportsService } from '@services/reports.service';
+import { ReportsController } from '@controllers/reports.controller';
+import { User, UserSchema } from '@models/users/user.schema';
+import { Reservation, ReservationSchema } from '@models/reservations/reservation.schema';
+import { Room, RoomSchema } from '@models/rooms/room.schema';
+import { Service, ServiceSchema } from '@models/services/service.schema';
 
 @Module({
   imports: [

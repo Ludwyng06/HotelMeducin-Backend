@@ -1,5 +1,5 @@
 import { Module } from '@nestjs/common';
-import { HotelMetricsController } from './controllers/hotel-metrics.controller';
+import { HotelMetricsController } from '@controllers/hotel-metrics.controller';
 import { RedisService } from '../../config/redis.service';
 
 @Module({

@@ -1,8 +1,8 @@
 import { Module } from '@nestjs/common';
 import { MongooseModule } from '@nestjs/mongoose';
-import { DocumentTypesService } from './services/document-types.service';
-import { DocumentTypesController } from './controllers/document-types.controller';
-import { DocumentType, DocumentTypeSchema } from './schemas/document-type.schema';
+import { DocumentTypesService } from '@services/document-types.service';
+import { DocumentTypesController } from '@controllers/document-types.controller';
+import { DocumentType, DocumentTypeSchema } from '@models/document-types/document-type.schema';
 
 @Module({
   imports: [
