@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, NotFoundException, ForbiddenException, BadRequestException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { Reservation, ReservationDocument } from '@models/reservations/reservation.schema';
@@ -98,40 +98,44 @@ export class ReservationsService {
     console.log('📊 Métricas actualizadas para nueva reserva');
     console.log('💰 Ingreso registrado: $' + createReservationDto.totalPrice);
     
-    // 📧 ENVÍO DE EMAIL CON PDF (incluye huéspedes registrados)
-    try {
-      const reservationWithDetails = await this.reservationModel
-        .findById(savedReservation._id)
-        .populate('userId')
-        .populate('roomId')
-        .exec();
+    // 📧 ENVÍO DE EMAIL CON PDF (ASÍNCRONO - NO BLOQUEA LA RESPUESTA)
+    // Ejecutar en background sin bloquear la creación de la reserva
+    setImmediate(async () => {
+      try {
+        const reservationWithDetails = await this.reservationModel
+          .findById(savedReservation._id)
+          .populate('userId')
+          .populate('roomId')
+          .exec();
 
-      if (reservationWithDetails && reservationWithDetails.userId) {
-        const userEmail = (reservationWithDetails.userId as any).email;
-        if (userEmail) {
-          // Cargar huéspedes asociados a la reserva y adjuntarlos al objeto a enviar al email
-          const guests = await this.guestsService.findByReservation(savedReservation._id.toString());
-          const reservationPayload = JSON.parse(JSON.stringify(reservationWithDetails));
-          reservationPayload.guests = (guests || []).map((g: any) => ({
-            firstName: g.firstName,
-            lastName: g.lastName,
-            documentType: g.documentType?.name || g.documentType,
-            documentNumber: g.documentNumber,
-            nationality: g.nationality,
-            phoneNumber: g.phoneNumber,
-            email: g.email,
-            isMainGuest: g.isMainGuest,
-          }));
+        if (reservationWithDetails && reservationWithDetails.userId) {
+          const userEmail = (reservationWithDetails.userId as any).email;
+          if (userEmail) {
+            // Cargar huéspedes asociados a la reserva y adjuntarlos al objeto a enviar al email
+            const guests = await this.guestsService.findByReservation(savedReservation._id.toString());
+            const reservationPayload = JSON.parse(JSON.stringify(reservationWithDetails));
+            reservationPayload.guests = (guests || []).map((g: any) => ({
+              firstName: g.firstName,
+              lastName: g.lastName,
+              documentType: g.documentType?.name || g.documentType,
+              documentNumber: g.documentNumber,
+              nationality: g.nationality,
+              phoneNumber: g.phoneNumber,
+              email: g.email,
+              isMainGuest: g.isMainGuest,
+            }));
 
-          await this.emailService.sendReservationConfirmation(reservationPayload, userEmail);
-          console.log('📧 Email de confirmación enviado a:', userEmail);
+            await this.emailService.sendReservationConfirmation(reservationPayload, userEmail);
+            console.log('📧 Email de confirmación enviado a:', userEmail);
+          }
         }
+      } catch (error) {
+        console.error('❌ Error enviando email de confirmación (no bloquea la reserva):', error);
+        // El error no afecta la creación de la reserva ya que se ejecuta en background
       }
-    } catch (error) {
-      console.error('❌ Error enviando email de confirmación:', error);
-      // No lanzamos el error para no interrumpir la creación de la reserva
-    }
+    });
     
+    // Retornar inmediatamente sin esperar el envío de email
     return savedReservation;
   }
 
@@ -174,6 +178,58 @@ export class ReservationsService {
 
   async remove(id: string): Promise<Reservation | null> {
     return this.reservationModel.findByIdAndDelete(id).exec();
+  }
+
+  /**
+   * Cancelar una reserva (solo cambia el status, no elimina)
+   * Verifica que el usuario solo pueda cancelar sus propias reservas
+   */
+  async cancel(id: string, userId: string): Promise<Reservation | null> {
+    // Buscar la reserva y verificar que pertenece al usuario
+    const reservation = await this.reservationModel.findById(id).exec();
+    
+    if (!reservation) {
+      throw new NotFoundException('Reserva no encontrada');
+    }
+
+    // Verificar que la reserva pertenece al usuario
+    const reservationUserId = reservation.userId?.toString() || reservation.userId;
+    const requestUserId = userId.toString();
+    
+    if (reservationUserId !== requestUserId) {
+      throw new ForbiddenException('No tienes permisos para cancelar esta reserva');
+    }
+
+    // Verificar que la reserva no esté ya cancelada o completada
+    if (reservation.status === 'cancelled' || reservation.status === 'CANCELLED') {
+      throw new BadRequestException('La reserva ya está cancelada');
+    }
+
+    if (reservation.status === 'completed' || reservation.status === 'COMPLETED') {
+      throw new BadRequestException('No se puede cancelar una reserva completada');
+    }
+
+    // Actualizar el status a 'cancelled'
+    const cancelledReservation = await this.reservationModel
+      .findByIdAndUpdate(
+        id,
+        { status: 'cancelled' },
+        { new: true }
+      )
+      .populate('userId')
+      .populate('roomId')
+      .exec();
+
+    // Invalidar cache de la habitación
+    if (cancelledReservation && cancelledReservation.roomId) {
+      const roomId = (cancelledReservation.roomId as any)._id?.toString() || cancelledReservation.roomId.toString();
+      await this.redisService.invalidateRoomCache(roomId);
+      await this.redisService.invalidateAvailableRoomsCache();
+      console.log('🗑️ Cache invalidado para habitación:', roomId);
+    }
+
+    console.log('✅ Reserva cancelada exitosamente:', id);
+    return cancelledReservation;
   }
 
   async getReservationsByDateRange(startDate: Date, endDate: Date): Promise<Reservation[]> {
@@ -234,9 +290,9 @@ export class ReservationsService {
     return occupiedDates;
   }
 
-  // 🔍 VALIDAR DUPLICADOS DE DOCUMENTOS
+  // 🔍 VALIDAR DUPLICADOS DE DOCUMENTOS, TELÉFONOS Y EMAILS
   private async validateDocumentDuplicates(guests: any[]): Promise<void> {
-    console.log('🔍 Validando duplicados de documentos...');
+    console.log('🔍 Validando duplicados de documentos, teléfonos y emails...');
     
     // Verificar duplicados dentro del mismo grupo de huéspedes
     const documentNumbers = guests.map(guest => guest.documentNumber).filter(Boolean);
@@ -246,12 +302,42 @@ export class ReservationsService {
       throw new Error('No se permiten documentos duplicados en la misma reserva');
     }
 
+    // Verificar teléfonos duplicados dentro del mismo grupo
+    const phoneNumbers = guests.map(guest => guest.phoneNumber).filter(Boolean);
+    const uniquePhones = new Set(phoneNumbers);
+    
+    if (phoneNumbers.length !== uniquePhones.size) {
+      throw new Error('No se permiten teléfonos duplicados en la misma reserva');
+    }
+
+    // Verificar emails duplicados dentro del mismo grupo
+    const emails = guests.map(guest => guest.email).filter(Boolean);
+    const uniqueEmails = new Set(emails);
+    
+    if (emails.length !== uniqueEmails.size) {
+      throw new Error('No se permiten emails duplicados en la misma reserva');
+    }
+
     // Verificar duplicados en la base de datos
     for (const guest of guests) {
       if (guest.documentNumber) {
         const exists = await this.guestsService.checkDocumentExists(guest.documentNumber);
         if (exists) {
           throw new Error(`El documento ${guest.documentNumber} ya está registrado en el sistema`);
+        }
+      }
+
+      if (guest.phoneNumber) {
+        const phoneExists = await this.guestsService.checkPhoneExists(guest.phoneNumber);
+        if (phoneExists) {
+          throw new Error(`El teléfono ${guest.phoneNumber} ya está registrado en el sistema`);
+        }
+      }
+
+      if (guest.email) {
+        const emailExists = await this.guestsService.checkEmailExists(guest.email);
+        if (emailExists) {
+          throw new Error(`El email ${guest.email} ya está registrado en el sistema`);
         }
       }
     }

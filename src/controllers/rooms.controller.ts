@@ -2,13 +2,17 @@ import { Controller, Get, Post, Body, Patch, Param, Delete, Query, UseGuards } f
 import { RoomsService } from '../services/rooms.service';
 import { CreateRoomDto } from '@models/rooms/dto/create-room.dto';
 import { JwtAuthGuard } from '@common/guards/jwt-auth.guard';
+import { Roles } from '@common/decorators/roles.decorator';
+import { RolesGuard } from '@common/guards/roles.guard';
+import { Public } from '@common/decorators/public.decorator';
 
 @Controller('rooms')
 export class RoomsController {
   constructor(private readonly roomsService: RoomsService) {}
 
   @Post()
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('admin', 'superadmin')
   async create(@Body() createRoomDto: CreateRoomDto) {
     const room = await this.roomsService.create(createRoomDto);
     return {
@@ -18,6 +22,7 @@ export class RoomsController {
     };
   }
 
+  @Public()
   @Get()
   async findAll(@Query('available') available?: string) {
     let rooms;
@@ -34,6 +39,7 @@ export class RoomsController {
     };
   }
 
+  @Public()
   @Get('search')
   async searchRooms(@Query() filters: any) {
     const rooms = await this.roomsService.searchRooms(filters);
@@ -44,6 +50,7 @@ export class RoomsController {
     };
   }
 
+  @Public()
   @Get('category/:categoryId')
   async findByCategory(@Param('categoryId') categoryId: string) {
     const rooms = await this.roomsService.findByCategory(categoryId);

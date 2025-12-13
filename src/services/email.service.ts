@@ -24,103 +24,200 @@ export class EmailService {
 
   private async buildCandidates() {
     const envHost = this.configService.get<string>('EMAIL_HOST', 'smtp.gmail.com');
-    const envPort = Number(this.configService.get<string>('EMAIL_PORT', '465'));
+    const envPort = Number(this.configService.get<string>('EMAIL_PORT', '587'));
     const secureEnv = this.configService.get<string>('EMAIL_SECURE');
     const envSecure = typeof secureEnv === 'string' ? secureEnv.toLowerCase() === 'true' : envPort === 465;
     const name = this.configService.get('EMAIL_CLIENT_NAME', 'hotelmeducin.local');
     const user = this.configService.get('EMAIL_USER');
     const pass = this.configService.get('EMAIL_PASS');
 
+    // Validar que tengamos credenciales
+    if (!user || !pass) {
+      console.warn('⚠️ EMAIL_USER o EMAIL_PASS no están configurados. El envío de emails estará deshabilitado.');
+      throw new Error('Configuración de email incompleta. Verifique EMAIL_USER y EMAIL_PASS en el archivo .env');
+    }
+
     const common = {
       name,
       auth: { user, pass },
-      pool: true,
-      maxConnections: 1,
-      maxMessages: 10,
-      tls: { rejectUnauthorized: false },
-      logger: true,
-      debug: true,
+      tls: { 
+        rejectUnauthorized: false
+      },
+      // Configuración mínima - igual que antes de las mejoras del PDF
     } as const;
 
+    // Priorizar puerto 587 (STARTTLS) que es más confiable con Gmail
     const candidates = [
-      // 1) Config exacta por .env
-      { host: envHost, port: envPort, secure: envSecure, requireTLS: !envSecure },
-      // 2) Gmail 465
-      { host: 'smtp.gmail.com', port: 465, secure: true, requireTLS: false },
-      // 3) Gmail 587 STARTTLS
+      // 1) Gmail 587 STARTTLS (más confiable y menos bloqueado)
       { host: 'smtp.gmail.com', port: 587, secure: false, requireTLS: true },
+      // 2) Config exacta por .env (si es diferente)
+      ...(envHost !== 'smtp.gmail.com' || envPort !== 587 
+        ? [{ host: envHost, port: envPort, secure: envSecure, requireTLS: !envSecure }] 
+        : []),
+      // 3) Gmail 465 como último recurso
+      { host: 'smtp.gmail.com', port: 465, secure: true, requireTLS: false },
     ];
 
     return { candidates, common };
   }
 
-  private async tryCreateTransporter(): Promise<void> {
+  private async tryCreateTransporter(retryCount: number = 0, allConfigsFailed421: boolean = false): Promise<void> {
+    // Si todas las configuraciones fallaron con 421, NO intentar nada
+    if (allConfigsFailed421) {
+      throw new Error('Gmail está bloqueando temporalmente las conexiones (error 421 - rate limit). La reserva fue creada exitosamente. El email se enviará automáticamente cuando Gmail permita nuevas conexiones. Puede descargar el PDF de confirmación manualmente.');
+    }
+    
+    // Cerrar transporter anterior si existe
+    if (this.transporter && typeof this.transporter.close === 'function') {
+      try {
+        this.transporter.close();
+      } catch (closeErr) {
+        // Ignorar errores al cerrar
+      }
+      this.transporter = null as unknown as nodemailer.Transporter;
+    }
+
     const { candidates, common } = await this.buildCandidates();
 
     let lastError: unknown = null;
+    let consecutive421Errors = 0; // Contador de errores 421 consecutivos
+    const MAX_421_ERRORS = 1; // Reducido a 1 para abortar más rápido
+    
     for (const cfg of candidates) {
       try {
-        const transporter = nodemailer.createTransport({ ...common, ...cfg });
-        await transporter.verify();
+        // Si ya detectamos error 421, abortar inmediatamente (Gmail está bloqueando)
+        if (consecutive421Errors >= MAX_421_ERRORS) {
+          console.error('❌ Gmail está bloqueando conexiones (error 421). Abortando inmediatamente.');
+          throw new Error('Gmail está bloqueando temporalmente las conexiones (error 421 - rate limit). La reserva fue creada exitosamente. El email se enviará automáticamente cuando Gmail permita nuevas conexiones. Puede descargar el PDF de confirmación manualmente.');
+        }
+
+        // Crear nuevo transporter con configuración optimizada para Gmail
+        const transporter = nodemailer.createTransport({ 
+          ...common, 
+          ...cfg,
+          connectionTimeout: 10000, // 10 segundos para dar tiempo a Gmail
+          greetingTimeout: 10000,
+          socketTimeout: 10000,
+          // Configuraciones adicionales para mejorar compatibilidad con Gmail
+          ...(cfg.requireTLS ? {
+            requireTLS: true,
+            tls: {
+              ...common.tls,
+              minVersion: 'TLSv1.2'
+            }
+          } : {})
+        });
+        
+        // Verificar conexión con timeout adecuado
+        await Promise.race([
+          transporter.verify(),
+          new Promise((_, reject) => 
+            setTimeout(() => reject(new Error('Verificación SMTP timeout')), 10000)
+          )
+        ]);
+        
         this.transporter = transporter;
         this.currentTransportConfig = cfg;
-        console.log('✅ SMTP verificado:', cfg);
-        return;
-      } catch (err) {
+        console.log('✅ SMTP verificado exitosamente:', { host: cfg.host, port: cfg.port });
+        return; // Éxito, salir
+      } catch (err: any) {
         lastError = err;
-        console.error('❌ Falló config SMTP:', cfg, err);
+        const errorMsg = err?.message || String(err);
+        const responseCode = err?.responseCode;
+        
+        // Verificar si es error 421
+        const isError421 = 
+          responseCode === 421 ||
+          /421.*Try again later/i.test(errorMsg) ||
+          /Try again later/i.test(errorMsg);
+        
+        if (isError421) {
+          consecutive421Errors++;
+          console.warn(`⚠️ Error 421 detectado. Gmail está bloqueando conexiones.`);
+          
+          // Abortar inmediatamente al primer error 421 para evitar más bloqueos
+          throw new Error('Gmail está bloqueando temporalmente las conexiones (error 421 - rate limit). La reserva fue creada exitosamente. El email se enviará automáticamente cuando Gmail permita nuevas conexiones. Puede descargar el PDF de confirmación manualmente.');
+        }
+        
+        // Para otros errores, intentar siguiente configuración
+        console.warn(`⚠️ Error SMTP en configuración ${cfg.host}:${cfg.port}:`, errorMsg.substring(0, 100));
+        continue; // Intentar siguiente configuración
       }
     }
-    throw lastError instanceof Error ? lastError : new Error('No fue posible inicializar el transporter SMTP');
+    
+    // Si llegamos aquí, todas las configuraciones fallaron
+    const lastErrorMsg = lastError instanceof Error 
+      ? lastError.message 
+      : String(lastError || 'Error desconocido');
+    
+    // Verificar si el último error fue 421
+    if (/421|Try again later/i.test(lastErrorMsg)) {
+      throw new Error('Gmail está bloqueando temporalmente las conexiones (error 421 - rate limit). La reserva fue creada exitosamente. El email se enviará automáticamente cuando Gmail permita nuevas conexiones. Puede descargar el PDF de confirmación manualmente.');
+    }
+    
+    // Para otros errores, lanzar el último error encontrado
+    throw lastError || new Error('Error al crear conexión SMTP: ' + lastErrorMsg);
   }
 
   async sendReservationConfirmation(reservation: any, guestEmail: string): Promise<void> {
-    try {
-      if (!this.transporter) {
-        await this.tryCreateTransporter();
-      }
-      // Generar PDF
-      const pdfBuffer = await this.pdfService.generateReservationPDF(reservation);
-      
-      // Configurar email
-      const idStr = (reservation?._id && typeof reservation._id.toString === 'function')
-        ? reservation._id.toString()
-        : String(reservation?._id || '');
-      const code = `RES-${idStr.slice(-8).toUpperCase()}`;
+    // Generar PDF primero (no depende de SMTP)
+    const pdfBuffer = await this.pdfService.generateReservationPDF(reservation);
+    
+    // Configurar email
+    const idStr = (reservation?._id && typeof reservation._id.toString === 'function')
+      ? reservation._id.toString()
+      : String(reservation?._id || '');
+    const code = `RES-${idStr.slice(-8).toUpperCase()}`;
 
-      const mailOptions = {
-        from: this.configService.get('EMAIL_FROM', 'Hotel Meducin <noreply@hotelmeducin.com>'),
-        to: guestEmail,
-        subject: `Confirmación de Reserva - ${code}`,
-        html: this.getEmailTemplate(reservation),
-        attachments: [
-          {
-            filename: `reserva-${idStr.slice(-8)}.pdf`,
-            content: pdfBuffer,
-            contentType: 'application/pdf'
-          }
-        ]
-      };
-
-      // Enviar email
-      let info: any;
-      try {
-        info = await this.transporter.sendMail(mailOptions);
-      } catch (err: any) {
-        // Reintento con recreación del transporter si falla protocolo/saludo
-        if (!this.transporter || err?.code === 'EPROTOCOL' || /Invalid greeting/i.test(err?.message || '')) {
-          console.warn('⚠️ Reintentando envío recreando transporter...');
-          await this.tryCreateTransporter();
-          info = await this.transporter.sendMail(mailOptions);
-        } else {
-          throw err;
+    const mailOptions = {
+      from: this.configService.get('EMAIL_FROM', 'Hotel Meducin <noreply@hotelmeducin.com>'),
+      to: guestEmail,
+      subject: `Confirmación de Reserva - ${code}`,
+      html: this.getEmailTemplate(reservation),
+      attachments: [
+        {
+          filename: `reserva-${idStr.slice(-8)}.pdf`,
+          content: pdfBuffer,
+          contentType: 'application/pdf'
         }
+      ]
+    };
+
+    // Sistema simplificado: intentar una sola vez rápidamente
+    // Como se ejecuta en background, no hay necesidad de múltiples reintentos
+    try {
+      // Crear transporter (ya maneja la detección rápida de errores 421)
+      if (!this.transporter) {
+        await this.tryCreateTransporter(0, false);
       }
+
+      // Intentar enviar el email
+      const info = await this.transporter.sendMail(mailOptions);
       console.log('✅ Email enviado exitosamente:', info.messageId);
+      return; // Éxito
       
-    } catch (error) {
-      console.error('❌ Error enviando email:', error);
-      throw new Error('Error al enviar confirmación por email');
+    } catch (err: any) {
+      const errorMessage = err?.message || '';
+      const responseCode = err?.responseCode;
+      
+      // Si el error ya contiene el mensaje de rate limit, simplemente relanzarlo
+      if (/Gmail.*bloqueando|rate limit|421/i.test(errorMessage)) {
+        console.error('❌ Error enviando email de confirmación (no bloquea la reserva):', errorMessage);
+        throw err;
+      }
+      
+      // Para otros errores, proporcionar mensaje genérico
+      console.error('❌ Error enviando email de confirmación (no bloquea la reserva):', {
+        message: errorMessage,
+        responseCode,
+        code: err?.code
+      });
+      
+      throw new Error(
+        `Error al enviar confirmación por email. ` +
+        `La reserva fue creada exitosamente. Puede descargar el PDF manualmente o contactar al hotel. ` +
+        `Error: ${errorMessage || 'Error desconocido'}`
+      );
     }
   }
 

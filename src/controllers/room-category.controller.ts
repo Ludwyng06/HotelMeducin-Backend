@@ -1,12 +1,14 @@
 import { Controller, Get, Param, Query, UseGuards } from '@nestjs/common';
 import { RoomCategoryService } from '../services/room-category.service';
 import { JwtAuthGuard } from '@common/guards/jwt-auth.guard';
+import { Public } from '@common/decorators/public.decorator';
 
 @Controller('room-categories')
 export class RoomCategoryController {
   constructor(private readonly roomCategoryService: RoomCategoryService) {}
 
   // Obtener todas las categorías activas
+  @Public()
   @Get()
   async findAll() {
     const categories = await this.roomCategoryService.findAll();
@@ -18,6 +20,7 @@ export class RoomCategoryController {
   }
 
   // Obtener categoría por ID
+  @Public()
   @Get(':id')
   async findOne(@Param('id') id: string) {
     const category = await this.roomCategoryService.findOne(id);
@@ -35,6 +38,7 @@ export class RoomCategoryController {
   }
 
   // Obtener categorías por rango de precio
+  @Public()
   @Get('search/price-range')
   async findByPriceRange(
     @Query('minPrice') minPrice: string,
@@ -52,6 +56,7 @@ export class RoomCategoryController {
   }
 
   // Obtener categorías por capacidad
+  @Public()
   @Get('search/capacity')
   async findByCapacity(@Query('capacity') capacity: string) {
     const categories = await this.roomCategoryService.findByCapacity(
@@ -65,7 +70,6 @@ export class RoomCategoryController {
   }
 
   // Obtener estadísticas de categorías (solo admin)
-  @UseGuards(JwtAuthGuard)
   @Get('admin/stats')
   async getStats() {
     const stats = await this.roomCategoryService.getStats();

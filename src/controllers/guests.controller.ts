@@ -2,11 +2,13 @@ import { Controller, Get, Post, Body, Patch, Param, Delete, UseGuards, Query } f
 import { GuestsService } from '@services/guests.service';
 import { CreateGuestDto, UpdateGuestDto } from '@models/guests/dto/guest.dto';
 import { JwtAuthGuard } from '@common/guards/jwt-auth.guard';
+import { Public } from '@common/decorators/public.decorator';
 
 @Controller('guests')
 export class GuestsController {
   constructor(private readonly guestsService: GuestsService) {}
 
+  @Public()
   @Get('public/check-document')
   async checkDocumentExistsPublic(
     @Query('documentNumber') documentNumber: string,
@@ -20,6 +22,20 @@ export class GuestsController {
     } else {
       exists = await this.guestsService.checkDocumentExists(documentNumber);
     }
+    return { exists };
+  }
+
+  @Public()
+  @Get('public/check-phone')
+  async checkPhoneExistsPublic(@Query('phoneNumber') phoneNumber: string) {
+    const exists = await this.guestsService.checkPhoneExists(phoneNumber);
+    return { exists };
+  }
+
+  @Public()
+  @Get('public/check-email')
+  async checkEmailExistsPublic(@Query('email') email: string) {
+    const exists = await this.guestsService.checkEmailExists(email);
     return { exists };
   }
 

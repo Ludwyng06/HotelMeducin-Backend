@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, ConflictException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import { User, UserDocument } from '@models/users/user.schema';
@@ -14,6 +14,16 @@ export class UsersService {
   ) {}
 
   async create(createUserDto: CreateUserDto): Promise<User> {
+    // 🔍 VALIDAR TELÉFONO DUPLICADO antes de crear
+    if (createUserDto.phoneNumber) {
+      const phoneExists = await this.checkPhoneExists(createUserDto.phoneNumber);
+      if (phoneExists) {
+        throw new ConflictException(
+          `El teléfono ${createUserDto.phoneNumber} ya está registrado en el sistema`
+        );
+      }
+    }
+
     const hashedPassword = await bcrypt.hash(createUserDto.password, 10);
 
     // Asegurar roleId por defecto: 'user'
@@ -35,16 +45,33 @@ export class UsersService {
       resolvedRoleId = defaultRole._id;
     }
 
-    const createdUser = new this.userModel({
-      ...createUserDto,
-      roleId: resolvedRoleId,
-      password: hashedPassword,
-    });
+    try {
+      const createdUser = new this.userModel({
+        ...createUserDto,
+        roleId: resolvedRoleId,
+        password: hashedPassword,
+      });
 
-    const saved = await createdUser.save();
-    // Devolver con roleId poblado para consumo inmediato
-    await saved.populate('roleId');
-    return saved;
+      const saved = await createdUser.save();
+      // Devolver con roleId poblado para consumo inmediato
+      await saved.populate('roleId');
+      return saved;
+    } catch (error: any) {
+      // Manejar errores de MongoDB por violación de índices únicos
+      if (error.code === 11000) {
+        const duplicateField = Object.keys(error.keyPattern || {})[0];
+        let message = 'Ya existe un registro con este valor';
+        
+        if (duplicateField === 'email') {
+          message = `El email ${createUserDto.email} ya está registrado en el sistema`;
+        } else if (duplicateField === 'phoneNumber') {
+          message = `El teléfono ${createUserDto.phoneNumber} ya está registrado en el sistema`;
+        }
+        
+        throw new ConflictException(message);
+      }
+      throw error;
+    }
   }
 
   async findAll(): Promise<User[]> {
@@ -57,6 +84,16 @@ export class UsersService {
 
   async findByEmail(email: string): Promise<User | null> {
     return this.userModel.findOne({ email }).populate('roleId').exec();
+  }
+
+  async findByPhone(phoneNumber: string): Promise<User | null> {
+    return this.userModel.findOne({ phoneNumber }).populate('roleId').exec();
+  }
+
+  async checkPhoneExists(phoneNumber: string): Promise<boolean> {
+    if (!phoneNumber) return false;
+    const user = await this.userModel.findOne({ phoneNumber }).exec();
+    return !!user;
   }
 
   async update(id: string, updateData: Partial<User>): Promise<User | null> {

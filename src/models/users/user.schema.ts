@@ -36,3 +36,6 @@ export class User {
 }
 
 export const UserSchema = SchemaFactory.createForClass(User);
+
+// Índice único para evitar teléfonos duplicados
+UserSchema.index({ phoneNumber: 1 }, { unique: true, sparse: true }); // sparse: permite null/undefined

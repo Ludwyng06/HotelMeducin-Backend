@@ -1,4 +1,4 @@
-import { Injectable, UnauthorizedException } from '@nestjs/common';
+import { Injectable, UnauthorizedException, ConflictException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { UsersService } from '@services/users.service';
 import { LoginDto } from '@models/auth/dto/login.dto';
@@ -13,9 +13,20 @@ export class AuthService {
   ) {}
 
   async register(registerDto: RegisterDto) {
+    // 🔍 VALIDAR EMAIL DUPLICADO
     const existingUser = await this.usersService.findByEmail(registerDto.email);
     if (existingUser) {
-      throw new UnauthorizedException('El usuario ya existe');
+      throw new ConflictException('El email ya está registrado en el sistema');
+    }
+
+    // 🔍 VALIDAR TELÉFONO DUPLICADO (si se proporciona)
+    if (registerDto.phoneNumber) {
+      const phoneExists = await this.usersService.checkPhoneExists(registerDto.phoneNumber);
+      if (phoneExists) {
+        throw new ConflictException(
+          `El teléfono ${registerDto.phoneNumber} ya está registrado en el sistema`
+        );
+      }
     }
 
     const user = await this.usersService.create(registerDto);

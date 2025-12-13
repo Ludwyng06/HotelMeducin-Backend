@@ -31,27 +31,59 @@ export class ReportsService {
     }
 
     const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
     
     const result = await this.userModel.aggregate([
       {
         $match: {
-          createdAt: { $gte: thirtyDaysAgo },
           isActive: true
         }
       },
+      // Hacer lookup del rol para obtener el nombre
+      {
+        $lookup: {
+          from: 'userroles',
+          localField: 'roleId',
+          foreignField: '_id',
+          as: 'role'
+        }
+      },
+      // Desenrollar el array de rol (debería ser solo uno)
+      {
+        $unwind: {
+          path: '$role',
+          preserveNullAndEmptyArrays: true // Mantener usuarios sin rol asignado
+        }
+      },
+      // Agrupar por nombre del rol
       {
         $group: {
-          _id: "$role",
+          _id: '$role.name', // Usar el nombre del rol
           totalUsers: { $sum: 1 },
           activeUsers: {
             $sum: {
               $cond: {
-                if: { $gte: ["$updatedAt", new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)] },
+                if: { $gte: ['$updatedAt', sevenDaysAgo] },
+                then: 1,
+                else: 0
+              }
+            }
+          },
+          recentlyCreated: {
+            $sum: {
+              $cond: {
+                if: { $gte: ['$createdAt', thirtyDaysAgo] },
                 then: 1,
                 else: 0
               }
             }
           }
+        }
+      },
+      // Ordenar por nombre de rol
+      {
+        $sort: {
+          _id: 1
         }
       }
     ]);
@@ -67,7 +99,8 @@ export class ReportsService {
     return this.reservationModel.aggregate([
       {
         $match: {
-          status: { $in: ["confirmed", "completed"] },
+          // Remover filtro de status para incluir TODAS las reservas
+          // status: { $in: ["confirmed", "completed"] },
           checkInDate: { $gte: startDate, $lte: endDate }
         }
       },
@@ -100,7 +133,55 @@ export class ReportsService {
                         $cond: {
                           if: { $eq: ["$_id.month", 4] },
                           then: "Abril",
-                          else: "Otros meses"
+                          else: {
+                            $cond: {
+                              if: { $eq: ["$_id.month", 5] },
+                              then: "Mayo",
+                              else: {
+                                $cond: {
+                                  if: { $eq: ["$_id.month", 6] },
+                                  then: "Junio",
+                                  else: {
+                                    $cond: {
+                                      if: { $eq: ["$_id.month", 7] },
+                                      then: "Julio",
+                                      else: {
+                                        $cond: {
+                                          if: { $eq: ["$_id.month", 8] },
+                                          then: "Agosto",
+                                          else: {
+                                            $cond: {
+                                              if: { $eq: ["$_id.month", 9] },
+                                              then: "Septiembre",
+                                              else: {
+                                                $cond: {
+                                                  if: { $eq: ["$_id.month", 10] },
+                                                  then: "Octubre",
+                                                  else: {
+                                                    $cond: {
+                                                      if: { $eq: ["$_id.month", 11] },
+                                                      then: "Noviembre",
+                                                      else: {
+                                                        $cond: {
+                                                          if: { $eq: ["$_id.month", 12] },
+                                                          then: "Diciembre",
+                                                          else: "Otros meses"
+                                                        }
+                                                      }
+                                                    }
+                                                  }
+                                                }
+                                              }
+                                            }
+                                          }
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
                         }
                       }
                     }
@@ -111,8 +192,12 @@ export class ReportsService {
           },
           totalReservations: 1,
           totalRevenue: 1,
-          averagePrice: 1
+          averagePrice: 1,
+          year: "$_id.year"
         }
+      },
+      {
+        $sort: { year: 1, "_id.month": 1 }
       }
     ]);
   }
@@ -159,6 +244,12 @@ export class ReportsService {
   async getPopularServices() {
     return this.reservationModel.aggregate([
       {
+        // Filtrar solo reservas que tienen servicios
+        $match: {
+          serviceIds: { $exists: true, $ne: [] }
+        }
+      },
+      {
         $unwind: "$serviceIds"
       },
       {
@@ -199,13 +290,106 @@ export class ReportsService {
     ]);
   }
 
-  // 🚀 CONSULTAS PARALELAS CON PROMISE.ALL() - Generar múltiples reportes simultáneamente
+  // 📊 NUEVO REPORTE: Estadísticas generales de reservas (sin filtros restrictivos)
+  async getReservationsStats() {
+    return this.reservationModel.aggregate([
+      {
+        // Contar todas las reservas agrupadas por estado
+        $group: {
+          _id: { $ifNull: ["$status", "sin-estado"] },
+          totalReservations: { $sum: 1 },
+          totalRevenue: { $sum: "$totalPrice" },
+          averagePrice: { $avg: "$totalPrice" },
+          averageGuests: { $avg: "$guestCount" }
+        }
+      },
+      {
+        $project: {
+          status: "$_id",
+          totalReservations: 1,
+          totalRevenue: 1,
+          averagePrice: { $round: ["$averagePrice", 2] },
+          averageGuests: { $round: ["$averageGuests", 1] },
+          _id: 0
+        }
+      },
+      {
+        $sort: { totalReservations: -1 }
+      }
+    ]);
+  }
+
+  // 📊 NUEVO REPORTE: Reservas por habitación (más simple que room-occupancy)
+  async getReservationsByRoom() {
+    return this.reservationModel.aggregate([
+      {
+        $lookup: {
+          from: "rooms",
+          localField: "roomId",
+          foreignField: "_id",
+          as: "room"
+        }
+      },
+      {
+        $unwind: {
+          path: "$room",
+          preserveNullAndEmptyArrays: false
+        }
+      },
+      {
+        $group: {
+          _id: {
+            roomId: "$roomId",
+            roomName: "$room.name",
+            roomNumber: "$room.roomNumber"
+          },
+          totalReservations: { $sum: 1 },
+          totalRevenue: { $sum: "$totalPrice" },
+          averagePrice: { $avg: "$totalPrice" }
+        }
+      },
+      {
+        $addFields: {
+          occupancyRate: {
+            $cond: {
+              if: { $gt: ["$totalReservations", 10] },
+              then: "Alta",
+              else: {
+                $cond: {
+                  if: { $gt: ["$totalReservations", 5] },
+                  then: "Media",
+                  else: "Baja"
+                }
+              }
+            }
+          }
+        }
+      },
+      {
+        $project: {
+          roomId: "$_id.roomId",
+          roomName: "$_id.roomName",
+          roomNumber: "$_id.roomNumber",
+          totalReservations: 1,
+          totalRevenue: 1,
+          averagePrice: { $round: ["$averagePrice", 2] },
+          occupancyRate: 1,
+          _id: 0
+        }
+      },
+      {
+        $sort: { totalReservations: -1 }
+      }
+    ]);
+  }
+
+  
   async generateAllReports() {
     console.log('🔄 Iniciando generación paralela de reportes...');
     const startTime = Date.now();
 
     try {
-      // Ejecutar todas las consultas en paralelo usando Promise.all()
+      
       const [
         activeUsers,
         monthlyReservations,
@@ -240,16 +424,16 @@ export class ReportsService {
     }
   }
 
-  // 🔄 PROCESOS CONCURRENTES - Actualización de disponibilidad de habitaciones
+
   async updateRoomAvailabilityConcurrently(roomIds: string[]) {
     console.log(`🔄 Actualizando disponibilidad de ${roomIds.length} habitaciones concurrentemente...`);
     
     const startTime = Date.now();
     
     try {
-      // Procesar actualizaciones en paralelo con Promise.all()
+      
       const updatePromises = roomIds.map(async (roomId) => {
-        // Verificar reservaciones activas para la habitación
+        
         const activeReservations = await this.reservationModel.countDocuments({
           roomId,
           status: { $in: ['confirmed', 'pending'] },
@@ -257,7 +441,7 @@ export class ReportsService {
           checkOutDate: { $gte: new Date() }
         });
 
-        // Actualizar disponibilidad basada en reservaciones
+        
         const isAvailable = activeReservations === 0;
         
         return this.roomModel.findByIdAndUpdate(
@@ -284,7 +468,7 @@ export class ReportsService {
     }
   }
 
-  // 🎯 CONCURRENCIA CONTROLADA - Crear reservaciones simultáneas con control de conflictos
+  
   async createReservationsConcurrently(reservationsData: any[]) {
     console.log(`🔄 Procesando ${reservationsData.length} reservaciones concurrentemente...`);
     
@@ -293,7 +477,7 @@ export class ReportsService {
     const errors: any[] = [];
 
     try {
-      // Procesar reservaciones en lotes para evitar sobrecarga
+      
       const batchSize = 5;
       const batches: any[][] = [];
       
@@ -304,7 +488,7 @@ export class ReportsService {
       for (const batch of batches) {
         const batchPromises = batch.map(async (reservationData: any) => {
           try {
-            // Verificar disponibilidad antes de crear
+            
             const isAvailable = await this.checkRoomAvailability(
               reservationData.roomId,
               new Date(reservationData.checkInDate),
@@ -315,7 +499,7 @@ export class ReportsService {
               throw new Error(`Habitación ${reservationData.roomId} no disponible`);
             }
 
-            // Crear reservación
+            
             const reservation = new this.reservationModel(reservationData);
             return await reservation.save();
           } catch (error: any) {

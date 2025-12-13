@@ -181,25 +181,186 @@ GET    /reports/revenue       # Reporte de ingresos
 GET    /reports/guests        # Reporte de huéspedes
 ```
 
-## 🔧 Estructura del Proyecto
+## 🔧 Arquitectura del Proyecto (Patrón MVC)
+
+El backend sigue el patrón **Modelo-Vista-Controlador (MVC)** adaptado para NestJS:
 
 ```
 src/
-├── modules/
-│   ├── auth/              # Autenticación JWT
-│   ├── users/             # Gestión de usuarios
-│   ├── rooms/             # Gestión de habitaciones
-│   ├── reservations/      # Sistema de reservaciones
-│   ├── services/          # Servicios del hotel
-│   └── reports/           # Reportes analíticos
-├── common/
-│   ├── filters/           # Filtros globales
-│   ├── interceptors/      # Interceptores
-│   ├── guards/            # Guards de seguridad
-│   └── decorators/        # Decoradores personalizados
-├── config/                # Configuraciones
-└── main.ts               # Punto de entrada
+├── models/                       # 📦 MODELS - Esquemas y DTOs
+│   ├── auth/                     # DTOs de autenticación (login, register)
+│   ├── document-types/           # Schema + DTOs de tipos de documento
+│   ├── guests/                   # Schema + DTOs de huéspedes
+│   ├── reservations/             # Schema + DTOs de reservaciones
+│   ├── reservation-drafts/       # Schema + DTOs de borradores
+│   ├── rooms/                    # Schema + DTOs de habitaciones y categorías
+│   ├── services/                 # Schema + DTOs de servicios del hotel
+│   └── users/                    # Schema + DTOs de usuarios y roles
+│
+├── controllers/                  # 🎮 CONTROLLERS - Endpoints HTTP
+│   ├── auth.controller.ts        # Autenticación y registro
+│   ├── users.controller.ts       # Gestión de usuarios
+│   ├── superadmin.controller.ts  # Gestión de administradores
+│   ├── rooms.controller.ts       # Gestión de habitaciones
+│   ├── room-category.controller.ts # Categorías de habitaciones
+│   ├── reservations.controller.ts  # Reservaciones
+│   ├── reservation-drafts.controller.ts # Borradores de reservas
+│   ├── guests.controller.ts      # Gestión de huéspedes
+│   ├── services.controller.ts    # Servicios del hotel
+│   ├── document-types.controller.ts # Tipos de documento
+│   ├── reports.controller.ts     # Reportes generales
+│   ├── hotel-metrics.controller.ts # Métricas del hotel
+│   ├── pdf.controller.ts         # Generación de PDFs
+│   ├── cache.controller.ts       # Gestión de caché
+│   ├── redis-test.controller.ts  # Testing de Redis
+│   ├── redis-advanced.controller.ts # Redis avanzado
+│   └── redis-dashboard.controller.ts # Dashboard de Redis
+│
+├── services/                     # 🔧 SERVICES - Lógica de negocio
+│   ├── auth.service.ts           # Lógica de autenticación
+│   ├── users.service.ts          # Lógica de usuarios
+│   ├── user-roles.service.ts     # Gestión de roles
+│   ├── rooms.service.ts          # Lógica de habitaciones
+│   ├── room-category.service.ts  # Lógica de categorías
+│   ├── reservations.service.ts   # Lógica de reservaciones
+│   ├── reservation-drafts.service.ts # Borradores
+│   ├── guests.service.ts         # Lógica de huéspedes
+│   ├── services.service.ts       # Servicios del hotel
+│   ├── document-types.service.ts # Tipos de documento
+│   ├── reports.service.ts        # Generación de reportes
+│   ├── pdf.service.ts            # Generación de PDFs
+│   ├── email.service.ts          # Envío de emails
+│   └── cache.service.ts          # Gestión de caché
+│
+├── modules/                      # 📦 MODULES - Módulos de NestJS
+│   ├── auth/                     # Módulo de autenticación + JWT Strategy
+│   ├── users/                    # Módulo de usuarios
+│   ├── rooms/                    # Módulo de habitaciones
+│   ├── reservations/             # Módulo de reservaciones
+│   ├── reservation-drafts/       # Módulo de borradores
+│   ├── guests/                   # Módulo de huéspedes
+│   ├── services/                 # Módulo de servicios
+│   ├── document-types/           # Módulo de tipos de documento
+│   ├── reports/                  # Módulo de reportes
+│   ├── pdf/                      # Módulo de PDFs
+│   ├── redis-cache/              # Módulo de caché Redis
+│   ├── redis-advanced/           # Redis avanzado
+│   ├── redis-dashboard/          # Dashboard Redis
+│   └── redis-test/               # Testing Redis
+│
+├── common/                       # 🛡️ COMMON - Componentes compartidos
+│   ├── decorators/               # Decoradores personalizados (roles, etc.)
+│   ├── filters/                  # Filtros de excepciones HTTP
+│   ├── guards/                   # Guards (JWT, Roles)
+│   └── interceptors/             # Interceptores (logging, transform)
+│
+├── config/                       # ⚙️ CONFIG - Configuraciones
+│   ├── mongodb.config.ts         # Configuración de MongoDB
+│   ├── redis.config.ts           # Configuración de Redis
+│   ├── redis.service.ts          # Servicio de Redis
+│   └── jwt.config.ts             # Configuración de JWT
+│
+├── views/                        # 👁️ VIEWS - (Vacío - API REST no usa vistas)
+├── app.module.ts                 # Módulo principal de la aplicación
+└── main.ts                       # Punto de entrada de la aplicación
 ```
+
+### 📊 Resumen de Componentes MVC
+
+#### **17 Controladores** (Controllers)
+Manejan las peticiones HTTP y delegan la lógica a los servicios:
+- Autenticación y Usuarios (3): `auth`, `users`, `superadmin`
+- Habitaciones (2): `rooms`, `room-category`
+- Reservaciones (3): `reservations`, `reservation-drafts`, `guests`
+- Servicios del Hotel (2): `services`, `document-types`
+- Reportes y Métricas (3): `reports`, `hotel-metrics`, `pdf`
+- Redis y Caché (6): `cache`, `redis-test`, `redis-advanced`, `redis-dashboard`
+
+#### **14 Servicios** (Services)
+Contienen la lógica de negocio y se comunican con la base de datos:
+- Autenticación y Usuarios: `auth`, `users`, `user-roles`
+- Habitaciones: `rooms`, `room-category`
+- Reservaciones: `reservations`, `reservation-drafts`, `guests`
+- Servicios del Hotel: `services`, `document-types`
+- Reportes y Utilidades: `reports`, `pdf`, `email`, `cache`
+
+#### **8 Modelos** (Models)
+Esquemas de MongoDB + DTOs para validación:
+- `auth` (DTOs), `users` (Schema + DTOs), `rooms` (Schema + DTOs)
+- `reservations` (Schema + DTOs), `reservation-drafts` (Schema + DTOs)
+- `guests` (Schema + DTOs), `services` (Schema + DTOs)
+- `document-types` (Schema + DTOs)
+
+#### **14 Módulos** (NestJS Modules)
+Encapsulan la funcionalidad y dependencias de cada feature.
+
+---
+
+## 🏗️ Flujo de Datos MVC en el Backend
+
+```
+Cliente HTTP
+    ↓
+┌─────────────────────────────────────────────────────┐
+│  1. CONTROLLER (Capa de Presentación)              │
+│     - Recibe peticiones HTTP                        │
+│     - Valida datos con DTOs                         │
+│     - Delega lógica al Service                      │
+│     - Retorna respuestas HTTP                       │
+└─────────────────────────────────────────────────────┘
+    ↓
+┌─────────────────────────────────────────────────────┐
+│  2. SERVICE (Lógica de Negocio)                    │
+│     - Procesa la lógica de negocio                  │
+│     - Valida reglas de negocio                      │
+│     - Interactúa con MongoDB usando Models          │
+│     - Maneja transacciones y caché                  │
+└─────────────────────────────────────────────────────┘
+    ↓
+┌─────────────────────────────────────────────────────┐
+│  3. MODEL (Esquemas + DTOs)                        │
+│     - Define estructura de datos (Schemas)          │
+│     - Valida tipos con DTOs                         │
+│     - Mapea a colecciones de MongoDB                │
+└─────────────────────────────────────────────────────┘
+    ↓
+MongoDB / Redis
+```
+
+### Ejemplo de Flujo: Crear una Reservación
+
+1. **Controller** (`reservations.controller.ts`):
+   ```typescript
+   @Post()
+   create(@Body() createDto: CreateReservationDto) {
+     return this.reservationsService.create(createDto);
+   }
+   ```
+
+2. **Service** (`reservations.service.ts`):
+   ```typescript
+   async create(createDto: CreateReservationDto) {
+     // Validar disponibilidad de habitación
+     // Calcular precio total
+     // Crear reservación en MongoDB
+     return await this.reservationModel.create(createDto);
+   }
+   ```
+
+3. **Model** (`reservation.schema.ts` + `create-reservation.dto.ts`):
+   ```typescript
+   @Schema()
+   export class Reservation {
+     @Prop({ required: true })
+     userId: string;
+     
+     @Prop({ required: true })
+     roomId: string;
+     // ... más campos
+   }
+   ```
+
+---
 
 ## 🚀 Inicio Rápido
 
@@ -212,7 +373,33 @@ src/
 
 ## 📝 Notas Importantes
 
+### ⚙️ Configuración
 - El servidor se ejecuta en el puerto **3000** por defecto
 - La base de datos se conecta a **MongoDB** en `localhost:27017`
-- **Redis** se usa para cache y sesiones
+- **Redis** se usa para cache y sesiones en el puerto **6379**
+
+### 🔐 Seguridad
 - Todas las rutas requieren autenticación JWT excepto `/auth/login` y `/auth/register`
+- Los Guards protegen rutas según roles: `user`, `admin`, `superadmin`
+- Las contraseñas se encriptan con **bcrypt**
+- Tokens JWT con expiración de **24 horas**
+
+### 🏗️ Arquitectura MVC
+- **17 Controladores** manejan las peticiones HTTP
+- **14 Servicios** contienen toda la lógica de negocio
+- **8 Modelos** definen esquemas de MongoDB y DTOs de validación
+- **14 Módulos** encapsulan features completas
+- **Separación clara** entre capas: Controller → Service → Model → Database
+
+### 📊 Base de Datos
+- **MongoDB** como base de datos principal
+- **Redis** para caché de sesiones y datos frecuentes
+- **Mongoose** como ODM para interactuar con MongoDB
+- Esquemas definidos con decoradores de Mongoose
+
+### 🔄 Flujo de Trabajo
+```
+HTTP Request → Guards → Controller → DTO Validation → Service → Model → MongoDB
+                  ↓                                        ↓
+              Interceptors                             Redis Cache
+```

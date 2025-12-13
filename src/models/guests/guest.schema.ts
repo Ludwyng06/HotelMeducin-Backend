@@ -43,5 +43,7 @@ export class Guest {
 
 export const GuestSchema = SchemaFactory.createForClass(Guest);
 
-// Índice compuesto para evitar duplicados de documentos
+// Índices únicos para evitar duplicados
 GuestSchema.index({ documentNumber: 1, documentType: 1 }, { unique: true });
+GuestSchema.index({ phoneNumber: 1 }, { unique: true, sparse: true }); // sparse: permite null/undefined
+GuestSchema.index({ email: 1 }, { unique: true, sparse: true }); // sparse: permite null/undefined

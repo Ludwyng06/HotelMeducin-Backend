@@ -1,7 +1,12 @@
-import { Controller, Get, Query, Post, Body } from '@nestjs/common';
+import { Controller, Get, Query, Post, Body, UseGuards } from '@nestjs/common';
 import { ReportsService } from '../services/reports.service';
+import { JwtAuthGuard } from '@common/guards/jwt-auth.guard';
+import { RolesGuard } from '@common/guards/roles.guard';
+import { Roles } from '@common/decorators/roles.decorator';
 
 @Controller('reports')
+@UseGuards(JwtAuthGuard, RolesGuard)
+@Roles('admin', 'superadmin')
 export class ReportsController {
   constructor(private readonly reportsService: ReportsService) {}
 
@@ -31,6 +36,17 @@ export class ReportsController {
     return this.reportsService.getPopularServices();
   }
 
+  // 📊 NUEVOS REPORTES MEJORADOS
+  @Get('reservations-stats')
+  getReservationsStats() {
+    return this.reportsService.getReservationsStats();
+  }
+
+  @Get('reservations-by-room')
+  getReservationsByRoom() {
+    return this.reportsService.getReservationsByRoom();
+  }
+
   // 🚀 NUEVOS ENDPOINTS CON PROCESOS ASINCRÓNICOS AVANZADOS
 
   @Get('all-parallel')
@@ -50,7 +66,7 @@ export class ReportsController {
 
   @Post('background-maintenance')
   async runBackgroundMaintenance() {
-    // Ejecutar en segundo plano sin bloquear la respuesta
+    
     this.reportsService.backgroundMaintenance().catch(error => {
       console.error('Error en mantenimiento en segundo plano:', error);
     });
