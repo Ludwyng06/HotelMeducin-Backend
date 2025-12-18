@@ -3,6 +3,8 @@ import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import { ReservationDraft, ReservationDraftDocument } from '@models/reservation-drafts/reservation-draft.schema';
 import { CreateReservationDraftDto, UpdateReservationDraftDto } from '@models/reservation-drafts/dto/reservation-draft.dto';
+import { TemporalUtils } from '@common/utils/temporal.utils';
+import { Temporal } from '@js-temporal/polyfill';
 
 @Injectable()
 export class ReservationDraftsService {
@@ -11,13 +13,15 @@ export class ReservationDraftsService {
   ) {}
 
   async create(createReservationDraftDto: CreateReservationDraftDto): Promise<ReservationDraft> {
-    // Establecer fecha de expiración a 24 horas
-    const expiresAt = new Date();
-    expiresAt.setHours(expiresAt.getHours() + 24);
+    // Establecer fecha de expiración a 24 horas usando Temporal
+    const now = TemporalUtils.now();
+    const expiresAt = now.add({ hours: 24 });
+    // Convertir a Date para MongoDB (expiresAt necesita ser Date para el índice TTL)
+    const expiresAtDate = TemporalUtils.zonedDateTimeToDate(expiresAt);
 
     const createdDraft = new this.reservationDraftModel({
       ...createReservationDraftDto,
-      expiresAt
+      expiresAt: expiresAtDate
     });
     return createdDraft.save();
   }

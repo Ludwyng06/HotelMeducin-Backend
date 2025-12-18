@@ -7,6 +7,7 @@ import { LoginDto } from '@models/auth/dto/login.dto';
 import { RegisterDto } from '@models/auth/dto/register.dto';
 import { LoginWith2FADto } from '@models/auth/dto/login-with-2fa.dto';
 import * as bcrypt from 'bcrypt';
+import { Temporal } from '@js-temporal/polyfill';
 
 @Injectable()
 export class AuthService {
@@ -273,7 +274,7 @@ export class AuthService {
     lastName: string;
     picture?: string;
   }) {
-    const startTime = Date.now();
+    const startTime = Temporal.Now.instant().epochMilliseconds;
     
     // OPTIMIZACIÓN 1: Buscar por Google ID y email en paralelo (reduce latencia)
     const [userByGoogleId, userByEmail] = await Promise.all([
@@ -281,7 +282,7 @@ export class AuthService {
       this.usersService.findByEmail(googleUser.email)
     ]);
     
-    const searchTime = Date.now() - startTime;
+    const searchTime = Temporal.Now.instant().epochMilliseconds - startTime;
     console.log(`⚡ [Google OAuth] Búsqueda de usuario completada en ${searchTime}ms`);
     
     // OPTIMIZACIÓN 2: Si existe por Google ID, actualizar solo si es necesario
@@ -292,35 +293,35 @@ export class AuthService {
         userByGoogleId.lastName !== googleUser.lastName;
       
       if (needsUpdate) {
-        const updateStart = Date.now();
+        const updateStart = Temporal.Now.instant().epochMilliseconds;
         const updated = await this.usersService.updateAndReturn(userByGoogleId._id.toString(), {
           email: googleUser.email,
           firstName: googleUser.firstName,
           lastName: googleUser.lastName,
         });
-        console.log(`⚡ [Google OAuth] Actualización de usuario completada en ${Date.now() - updateStart}ms`);
-        console.log(`⚡ [Google OAuth] Total de validateOrCreateGoogleUser: ${Date.now() - startTime}ms`);
+        console.log(`⚡ [Google OAuth] Actualización de usuario completada en ${Temporal.Now.instant().epochMilliseconds - updateStart}ms`);
+        console.log(`⚡ [Google OAuth] Total de validateOrCreateGoogleUser: ${Temporal.Now.instant().epochMilliseconds - startTime}ms`);
         return updated;
       }
-      console.log(`⚡ [Google OAuth] Usuario encontrado por Google ID (sin actualización necesaria) - Total: ${Date.now() - startTime}ms`);
+      console.log(`⚡ [Google OAuth] Usuario encontrado por Google ID (sin actualización necesaria) - Total: ${Temporal.Now.instant().epochMilliseconds - startTime}ms`);
       return userByGoogleId;
     }
 
     // OPTIMIZACIÓN 3: Si existe por email, vincular Google ID en una sola operación
     if (userByEmail) {
-      const linkStart = Date.now();
+      const linkStart = Temporal.Now.instant().epochMilliseconds;
       const linked = await this.usersService.updateAndReturn(userByEmail._id.toString(), {
         googleId: googleUser.googleId,
         authProvider: 'google',
       });
-      console.log(`⚡ [Google OAuth] Vinculación de Google ID completada en ${Date.now() - linkStart}ms`);
-      console.log(`⚡ [Google OAuth] Total de validateOrCreateGoogleUser: ${Date.now() - startTime}ms`);
+      console.log(`⚡ [Google OAuth] Vinculación de Google ID completada en ${Temporal.Now.instant().epochMilliseconds - linkStart}ms`);
+      console.log(`⚡ [Google OAuth] Total de validateOrCreateGoogleUser: ${Temporal.Now.instant().epochMilliseconds - startTime}ms`);
       return linked;
     }
 
     // OPTIMIZACIÓN 4: Crear usuario sin hashear password (ahorra ~100ms)
     // Para usuarios OAuth, el password no se usa, así que no lo hasheamos
-    const createStart = Date.now();
+    const createStart = Temporal.Now.instant().epochMilliseconds;
     const newUser = await this.usersService.create({
       email: googleUser.email,
       firstName: googleUser.firstName,
@@ -330,8 +331,8 @@ export class AuthService {
       authProvider: 'google',
     } as any);
     
-    console.log(`⚡ [Google OAuth] Creación de nuevo usuario completada en ${Date.now() - createStart}ms`);
-    console.log(`⚡ [Google OAuth] Total de validateOrCreateGoogleUser: ${Date.now() - startTime}ms`);
+    console.log(`⚡ [Google OAuth] Creación de nuevo usuario completada en ${Temporal.Now.instant().epochMilliseconds - createStart}ms`);
+    console.log(`⚡ [Google OAuth] Total de validateOrCreateGoogleUser: ${Temporal.Now.instant().epochMilliseconds - startTime}ms`);
 
     return newUser;
   }

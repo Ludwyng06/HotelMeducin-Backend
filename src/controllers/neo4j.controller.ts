@@ -9,6 +9,8 @@ import { Public } from '@common/decorators/public.decorator';
 import { UsersService } from '@services/users.service';
 import { RoomsService } from '@services/rooms.service';
 import { ReservationsService } from '@services/reservations.service';
+import { TemporalUtils } from '@common/utils/temporal.utils';
+import { Temporal } from '@js-temporal/polyfill';
 
 @Controller('neo4j')
 export class Neo4jController {
@@ -278,6 +280,7 @@ export class Neo4jController {
         reservationId: reservation._id?.toString(),
         userId: userId,
         roomId: roomId,
+        status: reservation.status, // Log del status
         hasUserId: !!userId,
         hasRoomId: !!roomId
       });
@@ -301,6 +304,86 @@ export class Neo4jController {
         users: users.length,
         rooms: rooms.length,
         reservations: reservations.length,
+      },
+    };
+  }
+
+  @Post('sync/reservations-today')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('superadmin', 'admin')
+  async syncTodayReservations() {
+    console.log('🔄 [SYNC-TODAY] Iniciando sincronización de reservaciones del día actual...');
+    
+    // Obtener fecha de hoy usando Temporal
+    const today = TemporalUtils.today();
+    const todayStart = TemporalUtils.plainDateToDate(today).toISOString();
+    const tomorrow = TemporalUtils.addDays(today, 1);
+    const tomorrowStart = TemporalUtils.plainDateToDate(tomorrow).toISOString();
+    
+    console.log(`🔄 [SYNC-TODAY] Buscando reservaciones entre ${todayStart} y ${tomorrowStart}`);
+    
+    // Obtener reservaciones del día actual con datos poblados
+    const reservations = await this.reservationsService.findAll();
+    const todayReservations = reservations.filter((res: any) => {
+      // Convertir checkInDate a string ISO para comparación
+      let checkInDateStr: string;
+      if (res.checkInDate instanceof Date) {
+        checkInDateStr = res.checkInDate.toISOString();
+      } else if (res.checkInDate instanceof Temporal.PlainDate) {
+        checkInDateStr = TemporalUtils.plainDateToDate(res.checkInDate).toISOString();
+      } else {
+        checkInDateStr = String(res.checkInDate);
+      }
+      // Comparar strings ISO directamente
+      return checkInDateStr >= todayStart && checkInDateStr < tomorrowStart;
+    });
+    
+    console.log(`🔄 [SYNC-TODAY] Encontradas ${todayReservations.length} reservaciones para hoy`);
+    
+    // Log del status de cada reservación
+    todayReservations.forEach((res: any, idx: number) => {
+      console.log(`📊 [SYNC-TODAY] Reservación ${idx + 1}:`, {
+        id: res._id?.toString(),
+        status: res.status,
+        checkInDate: res.checkInDate
+      });
+    });
+    
+    // Normalizar reservaciones para sincronización
+    const reservationsForSync = todayReservations.map((res: any) => {
+      const reservation = res.toObject ? res.toObject() : JSON.parse(JSON.stringify(res));
+      
+      const userId = reservation.userId?._id?.toString() || 
+                    reservation.userId?.id?.toString() || 
+                    (reservation.userId && typeof reservation.userId === 'object' ? reservation.userId.toString() : reservation.userId) ||
+                    reservation.userId;
+      
+      const roomId = reservation.roomId?._id?.toString() || 
+                    reservation.roomId?.id?.toString() || 
+                    (reservation.roomId && typeof reservation.roomId === 'object' ? reservation.roomId.toString() : reservation.roomId) ||
+                    reservation.roomId;
+      
+      return {
+        ...reservation,
+        _id: reservation._id?.toString() || reservation._id,
+        userId: userId,
+        roomId: roomId
+      };
+    });
+    
+    console.log(`🔄 [SYNC-TODAY] Sincronizando ${reservationsForSync.length} reservaciones...`);
+    await this.neo4jService.syncReservationsFromMongo(reservationsForSync);
+    console.log('✅ [SYNC-TODAY] Reservaciones del día sincronizadas');
+    
+    return {
+      success: true,
+      message: `Sincronización de reservaciones del día completada: ${reservationsForSync.length} reservaciones`,
+      data: {
+        reservations: reservationsForSync.length,
+        reservationsByStatus: reservationsForSync.reduce((acc: any, res: any) => {
+          acc[res.status] = (acc[res.status] || 0) + 1;
+          return acc;
+        }, {})
       },
     };
   }

@@ -1,3 +1,7 @@
+// IMPORTAR PRIMERO - antes que cualquier otro código
+import '@js-temporal/polyfill';
+import './config/temporal.config';
+
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { ValidationPipe, BadRequestException } from '@nestjs/common';

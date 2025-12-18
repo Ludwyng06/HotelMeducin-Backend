@@ -58,3 +58,55 @@ report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 # Documentation and markdown files
 Documentos/
 
+# Database data files (MongoDB, Neo4j, Redis) - IGNORAR TODO
+database/mongodb/data/
+database/neo4j/data/
+database/redis/data/
+
+# Database backups - IGNORAR TODO
+database/**/backup/
+database/*/backup/
+
+# MongoDB specific files
+database/mongodb/data/.mongodb/
+*.wt
+*.lock
+WiredTiger*
+diagnostic.data/
+mongod.lock
+storage.bson
+
+# Neo4j specific files
+database/neo4j/data/databases/
+database/neo4j/data/transactions/
+database/neo4j/data/dbms/
+database/neo4j/data/server_id
+database/neo4j/data/store_lock
+database/neo4j/logs/
+database/neo4j/plugins/*.jar
+!database/neo4j/plugins/.gitkeep
+
+# Redis specific files
+database/redis/data/dump.rdb
+database/redis/data/appendonlydir/
+
+# Docker database files - NO TRACKEAR (son específicos del entorno)
+database/mongodb/Dockerfile
+database/neo4j/Dockerfile
+database/redis/Dockerfile
+
+# Scripts temporales de testing/debugging
+scripts/debug-*.js
+scripts/test-*.js
+scripts/test-*.md
+
+# Scripts de migración (ya ejecutados, no necesarios en repo)
+scripts/migrate-*.js
+
+# Docker override files
+docker-compose.override.yml
+
+# Build outputs
+dist/
+*.tsbuildinfo
+

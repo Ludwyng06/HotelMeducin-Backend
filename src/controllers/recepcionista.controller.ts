@@ -9,6 +9,8 @@ import { Reservation, ReservationDocument } from '@models/reservations/reservati
 import { RoomsService } from '@services/rooms.service';
 import { UsersService } from '@services/users.service';
 import { UserRolesService } from '@services/user-roles.service';
+import { TemporalUtils } from '@common/utils/temporal.utils';
+import { Temporal } from '@js-temporal/polyfill';
 
 @Controller('recepcionista')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -24,22 +26,21 @@ export class RecepcionistaController {
 
   @Get('dashboard')
   async getDashboard(@Query('date') date?: string) {
-    // Si se proporciona fecha, usar esa fecha; si no, usar hoy
+    // Si se proporciona fecha, usar esa fecha; si no, usar hoy (usando Temporal)
     let targetDate: Date;
     if (date) {
-      // Si viene como string YYYY-MM-DD, crear la fecha correctamente
+      // Si viene como string YYYY-MM-DD, usar Temporal
       if (date.match(/^\d{4}-\d{2}-\d{2}$/)) {
-        const [year, month, day] = date.split('-').map(Number);
-        targetDate = new Date(year, month - 1, day);
+        const plainDate = TemporalUtils.parsePlainDate(date);
+        targetDate = TemporalUtils.plainDateToDate(plainDate);
       } else {
         targetDate = new Date(date);
       }
     } else {
-      targetDate = new Date();
+      targetDate = TemporalUtils.plainDateToDate(TemporalUtils.today());
     }
-    targetDate.setHours(0, 0, 0, 0);
-    const tomorrow = new Date(targetDate);
-    tomorrow.setDate(tomorrow.getDate() + 1);
+    const tomorrow = TemporalUtils.addDays(TemporalUtils.dateToPlainDate(targetDate), 1);
+    const tomorrowDate = TemporalUtils.plainDateToDate(tomorrow);
     
     // Obtener reservas pendientes (todas las fechas - esto no cambia)
     const pendingReservations = await this.reservationsService.findPendingReservations(targetDate);
@@ -49,7 +50,7 @@ export class RecepcionistaController {
       .find({
         checkInDate: {
           $gte: targetDate,
-          $lt: tomorrow
+          $lt: tomorrowDate
         }
       })
       .populate('userId', 'firstName lastName email phoneNumber')
@@ -111,9 +112,8 @@ export class RecepcionistaController {
     } else {
       targetDate = new Date();
     }
-    targetDate.setHours(0, 0, 0, 0);
-    const nextDay = new Date(targetDate);
-    nextDay.setDate(nextDay.getDate() + 1);
+    const nextDay = TemporalUtils.addDays(TemporalUtils.dateToPlainDate(targetDate), 1);
+    const nextDayDate = TemporalUtils.plainDateToDate(nextDay);
     
     // Obtener reservas confirmadas ACTIVAS en la fecha objetivo
     // Usar EXACTAMENTE la misma lógica que el dashboard para garantizar consistencia
@@ -130,7 +130,13 @@ export class RecepcionistaController {
     console.log(`💰 [Cash Register] Fecha objetivo: ${targetDate.toISOString()} (${targetDate.toLocaleDateString('es-CO')})`);
     console.log(`💰 [Cash Register] Total reservas confirmadas en BD: ${allConfirmed.length}`);
     allConfirmed.forEach((res, idx) => {
-      console.log(`💰 [Cash Register] Reserva ${idx + 1}: checkIn=${res.checkInDate?.toISOString()}, checkOut=${res.checkOutDate?.toISOString()}, price=${res.totalPrice}, method=${res.paymentMethod}`);
+      const checkInStr = res.checkInDate instanceof Date 
+        ? res.checkInDate.toISOString() 
+        : res.checkInDate?.toString() || 'N/A';
+      const checkOutStr = res.checkOutDate instanceof Date
+        ? res.checkOutDate.toISOString()
+        : res.checkOutDate?.toString() || 'N/A';
+      console.log(`💰 [Cash Register] Reserva ${idx + 1}: checkIn=${checkInStr}, checkOut=${checkOutStr}, price=${res.totalPrice}, method=${res.paymentMethod}`);
     });
     
     const confirmedReservations = await this.reservationModel
@@ -167,7 +173,13 @@ export class RecepcionistaController {
       const method = (reservation.paymentMethod || 'efectivo').toLowerCase();
       const price = reservation.totalPrice || 0;
       
-      console.log(`💰 [Cash Register] Reserva ${idx + 1}: method=${method}, price=${price}, checkIn=${reservation.checkInDate?.toISOString()}, checkOut=${reservation.checkOutDate?.toISOString()}`);
+      const checkInStr = reservation.checkInDate instanceof Date
+        ? reservation.checkInDate.toISOString()
+        : reservation.checkInDate?.toString() || 'N/A';
+      const checkOutStr = reservation.checkOutDate instanceof Date
+        ? reservation.checkOutDate.toISOString()
+        : reservation.checkOutDate?.toString() || 'N/A';
+      console.log(`💰 [Cash Register] Reserva ${idx + 1}: method=${method}, price=${price}, checkIn=${checkInStr}, checkOut=${checkOutStr}`);
       
       // Solo procesar efectivo o transferencia, ignorar cualquier otro valor
       if (method === 'efectivo') {
@@ -199,7 +211,7 @@ export class RecepcionistaController {
         status: { $in: ['cancelled', 'CANCELLED'] },
         cancelledAt: {
           $gte: targetDate,
-          $lt: nextDay
+          $lt: nextDayDate
         },
         // Solo reservas que fueron confirmadas antes de cancelarse (tienen confirmedAt)
         confirmedAt: { $exists: true, $ne: null }
@@ -263,9 +275,10 @@ export class RecepcionistaController {
 
   @Get('rooms/with-reservations')
   async getRoomsWithReservations() {
-    const now = new Date();
-    const today = new Date(now);
-    today.setHours(0, 0, 0, 0);
+    const now = TemporalUtils.now();
+    const nowDate = TemporalUtils.zonedDateTimeToDate(now);
+    const today = TemporalUtils.today();
+    const todayDate = TemporalUtils.plainDateToDate(today);
 
     // Obtener todas las habitaciones
     const rooms = await this.roomsService.findAll();
@@ -278,15 +291,15 @@ export class RecepcionistaController {
           // Reservas activas (ocupadas ahora)
           {
             status: 'confirmed',
-            checkInDate: { $lte: now },
-            checkOutDate: { $gt: now }
+            checkInDate: { $lte: nowDate },
+            checkOutDate: { $gt: nowDate }
           },
           // Reservas pendientes que empiezan hoy o están activas
           {
             status: 'pending',
             $or: [
-              { checkInDate: { $gte: today, $lt: new Date(today.getTime() + 24 * 60 * 60 * 1000) } },
-              { checkInDate: { $lte: now }, checkOutDate: { $gt: now } }
+              { checkInDate: { $gte: todayDate, $lt: TemporalUtils.plainDateToDate(TemporalUtils.addDays(today, 1)) } },
+              { checkInDate: { $lte: nowDate }, checkOutDate: { $gt: nowDate } }
             ]
           }
         ]
@@ -341,9 +354,14 @@ export class RecepcionistaController {
         const pendingReservation = pendingReservations[0];
         status = 'pending';
         
-        const createdAt = new Date((pendingReservation as any).createdAt || pendingReservation.checkInDate);
-        const expirationTime = new Date(createdAt.getTime() + 60 * 60 * 1000); // 1 hora después de creación
-        const timeRemaining = expirationTime.getTime() - now.getTime();
+        const createdAtValue = (pendingReservation as any).createdAt || pendingReservation.checkInDate;
+        const createdAt = createdAtValue instanceof Date
+          ? TemporalUtils.dateToZonedDateTime(createdAtValue)
+          : createdAtValue instanceof Temporal.PlainDate
+          ? TemporalUtils.dateToZonedDateTime(TemporalUtils.plainDateToDate(createdAtValue))
+          : TemporalUtils.dateToZonedDateTime(new Date(createdAtValue));
+        const expirationTime = createdAt.add({ hours: 1 });
+        const timeRemaining = expirationTime.toInstant().epochMilliseconds - now.toInstant().epochMilliseconds;
         
         if (timeRemaining > 0) {
           const minutes = Math.floor(timeRemaining / 60000);
@@ -416,10 +434,21 @@ export class RecepcionistaController {
       throw new Error('Usuario no autenticado');
     }
 
+    // CORRECCIÓN: Mapear paymentMethod a method para que coincida con la estructura esperada por el servicio
+    // El servicio espera paymentInfo: { method?: string; notes?: string }
+    // pero el body viene con paymentMethod, no method
+    const paymentInfo = {
+      method: body.paymentMethod, // Mapear paymentMethod -> method
+      notes: body.notes
+    };
+
+    // Log para debug
+    console.log(`💰 [Confirm Reservation Controller] paymentMethod recibido: ${body.paymentMethod}, mapeado a method: ${paymentInfo.method}`);
+
     const reservation = await this.reservationsService.confirmReservation(
       id,
       userId.toString(),
-      body
+      paymentInfo // Pasar el objeto mapeado correctamente
     );
     
     return {
@@ -450,7 +479,7 @@ export class RecepcionistaController {
         id,
         {
           status: 'cancelled',
-          cancelledAt: new Date(),
+          cancelledAt: TemporalUtils.zonedDateTimeToDate(TemporalUtils.now()),
           cancellationReason: body.reason || 'Cancelada por recepcionista'
         },
         { new: true }

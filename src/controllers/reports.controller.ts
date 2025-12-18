@@ -7,6 +7,7 @@ import { Neo4jService } from '../services/neo4j.service';
 import { JwtAuthGuard } from '@common/guards/jwt-auth.guard';
 import { RolesGuard } from '@common/guards/roles.guard';
 import { Roles } from '@common/decorators/roles.decorator';
+import { TemporalUtils } from '@common/utils/temporal.utils';
 
 @Controller('reports')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -88,7 +89,7 @@ export class ReportsController {
     return {
       success: true,
       message: 'Mantenimiento en segundo plano iniciado',
-      timestamp: new Date()
+      timestamp: TemporalUtils.now().toInstant().toString()
     };
   }
 
@@ -103,8 +104,8 @@ export class ReportsController {
       const workbook = await this.excelService.generateDashboardReport(startDate, endDate);
       
       // Generar nombre de archivo con fecha
-      const now = new Date();
-      const dateStr = now.toISOString().split('T')[0];
+      const now = TemporalUtils.today();
+      const dateStr = TemporalUtils.formatDate(now);
       const filename = `reporte-metricas-hotel-${dateStr}.xlsx`;
       
       // Configurar headers para descarga
@@ -141,8 +142,8 @@ export class ReportsController {
       const pdfBuffer = await this.pdfService.generateNetworkAnalysisPDF(analysisData);
       
       // Generar nombre de archivo con fecha
-      const now = new Date();
-      const dateStr = now.toISOString().split('T')[0];
+      const now = TemporalUtils.today();
+      const dateStr = TemporalUtils.formatDate(now);
       const filename = `analisis-red-relaciones-${dateStr}.pdf`;
       
       // Configurar headers para descarga

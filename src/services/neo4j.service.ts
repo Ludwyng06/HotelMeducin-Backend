@@ -1,7 +1,11 @@
 import { Injectable, OnModuleInit, OnModuleDestroy, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { InjectConnection } from '@nestjs/mongoose';
+import { Connection } from 'mongoose';
 import { Driver, Session, Result } from 'neo4j-driver';
 import { getNeo4jConfig, createNeo4jDriver } from '@config/neo4j.config';
+import { TemporalUtils } from '@common/utils/temporal.utils';
+import { Temporal } from '@js-temporal/polyfill';
 
 @Injectable()
 export class Neo4jService implements OnModuleInit, OnModuleDestroy {
@@ -9,7 +13,10 @@ export class Neo4jService implements OnModuleInit, OnModuleDestroy {
   private driver: Driver | null = null;
   private isConnectedFlag: boolean = false;
 
-  constructor(private configService: ConfigService) {
+  constructor(
+    private configService: ConfigService,
+    @InjectConnection() private connection: Connection,
+  ) {
     const config = getNeo4jConfig(configService);
     this.driver = createNeo4jDriver(config);
   }
@@ -274,16 +281,12 @@ export class Neo4jService implements OnModuleInit, OnModuleDestroy {
       throw new Error('Neo4j no está disponible');
     }
     try {
-      // Filtrar solo reservaciones del día actual
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
-      const todayStart = today.toISOString(); // 2025-12-14T00:00:00.000Z
-      const tomorrow = new Date(today);
-      tomorrow.setDate(tomorrow.getDate() + 1);
-      const tomorrowStart = tomorrow.toISOString(); // 2025-12-15T00:00:00.000Z
-      
-      // También crear formato de fecha solo (YYYY-MM-DD) para comparación flexible
-      const todayDateOnly = today.toISOString().split('T')[0]; // 2025-12-14
+      // Filtrar solo reservaciones del día actual usando Temporal
+      const today = TemporalUtils.today();
+      const todayDateOnly = TemporalUtils.formatDate(today); // YYYY-MM-DD
+      const todayStart = TemporalUtils.plainDateToDate(today).toISOString(); // 2025-12-14T00:00:00.000Z
+      const tomorrow = TemporalUtils.addDays(today, 1);
+      const tomorrowStart = TemporalUtils.plainDateToDate(tomorrow).toISOString(); // 2025-12-15T00:00:00.000Z
       
       this.logger.log(`📅 Filtrando reservaciones del día: ${todayDateOnly} (${todayStart} a ${tomorrowStart})`);
       
@@ -360,9 +363,20 @@ export class Neo4jService implements OnModuleInit, OnModuleDestroy {
           if (nodeType === 'User') {
             label = `${node.properties.firstName || ''} ${node.properties.lastName || ''}`.trim() || node.properties.email || 'Usuario';
           } else if (nodeType === 'Reservation') {
-            const checkIn = node.properties.checkInDate ? new Date(node.properties.checkInDate).toLocaleDateString('es-CO') : 'N/A';
-            const status = node.properties.status || 'pending';
+            const checkIn = node.properties.checkInDate
+              ? TemporalUtils.formatDateLocalized(
+                  TemporalUtils.parsePlainDate(node.properties.checkInDate)
+                )
+              : 'N/A';
+            // Normalizar status a minúsculas para consistencia
+            const rawStatus = node.properties.status || 'pending';
+            const status = rawStatus.toLowerCase();
             label = `Reserva ${checkIn} (${status})`;
+            
+            // Log para debug de reservaciones confirmadas
+            if (status === 'confirmed' || rawStatus === 'confirmed' || rawStatus === 'CONFIRMED') {
+              this.logger.log(`📊 [getNodeInfo] Reservación confirmada detectada: rawStatus=${rawStatus}, normalized=${status}`);
+            }
           } else if (nodeType === 'Room') {
             label = node.properties.name || 'Habitación';
           }
@@ -388,12 +402,24 @@ export class Neo4jService implements OnModuleInit, OnModuleDestroy {
         if (resNode) {
           const nodeInfo = getNodeInfo(resNode, resLabels);
           if (nodeInfo && !nodes.has(resNode.identity.toString())) {
+            // Normalizar el status a minúsculas para consistencia
+            const rawStatus = resNode.properties.status || 'pending';
+            const normalizedStatus = rawStatus.toLowerCase();
+            
+            // Log para debug
+            if (normalizedStatus === 'confirmed' || rawStatus === 'confirmed' || rawStatus === 'CONFIRMED') {
+              this.logger.log(`📊 [getFullGraph] Reservación confirmada: ID=${resNode.identity.toString()}, rawStatus=${rawStatus}, normalized=${normalizedStatus}`);
+            }
+            
             nodes.set(resNode.identity.toString(), {
               id: resNode.identity.toString(),
               label: nodeInfo.label,
               type: nodeInfo.type,
               group: nodeInfo.group,
-              properties: resNode.properties,
+              properties: {
+                ...resNode.properties,
+                status: normalizedStatus, // Asegurar que el status esté normalizado
+              },
             });
           }
         }
@@ -466,7 +492,51 @@ export class Neo4jService implements OnModuleInit, OnModuleDestroy {
       throw new Error('Neo4j no está disponible');
     }
     try {
+      // Obtener todos los roles una vez para mapeo eficiente
+      let roleMap: Record<string, string> = {};
+      try {
+        const UserRole = this.connection.models.UserRole || this.connection.model('UserRole', new (require('mongoose').Schema)({}, { strict: false }), 'userroles');
+        const roles = await UserRole.find({}).lean();
+        roles.forEach((role: any) => {
+          roleMap[role._id.toString()] = role.name;
+        });
+        this.logger.log(`📋 Mapa de roles cargado: ${Object.keys(roleMap).length} roles`);
+      } catch (e) {
+        this.logger.warn('⚠️ No se pudo cargar el mapa de roles, usando valores por defecto');
+      }
+      
       for (const user of users) {
+        // Determinar el nombre del rol
+        let roleName = 'user'; // Default
+        
+        // Si roleId está poblado con el objeto completo
+        if (user.roleId && typeof user.roleId === 'object' && user.roleId.name) {
+          roleName = user.roleId.name;
+        }
+        // Si roleId es solo un string (ID), buscar en el mapa
+        else if (user.roleId) {
+          const roleIdStr = user.roleId.toString();
+          if (roleMap[roleIdStr]) {
+            roleName = roleMap[roleIdStr];
+          } else {
+            // Intentar buscar directamente si no está en el mapa
+            try {
+              const UserRole = this.connection.models.UserRole || this.connection.model('UserRole', new (require('mongoose').Schema)({}, { strict: false }), 'userroles');
+              const role = await UserRole.findById(roleIdStr).lean();
+              if (role && (role as any).name) {
+                roleName = (role as any).name;
+                roleMap[roleIdStr] = roleName; // Agregar al mapa para próximas iteraciones
+              }
+            } catch (e) {
+              this.logger.warn(`⚠️ No se pudo obtener el rol para usuario ${user._id}, usando 'user' como default`);
+            }
+          }
+        }
+        // Si ya viene el nombre del rol directamente
+        else if (user.role && typeof user.role === 'string') {
+          roleName = user.role;
+        }
+        
         const query = `
           MERGE (u:User {id: $id})
           SET u.email = $email,
@@ -477,11 +547,13 @@ export class Neo4jService implements OnModuleInit, OnModuleDestroy {
         `;
         await session.run(query, {
           id: user._id.toString(),
-          email: user.email,
-          firstName: user.firstName,
-          lastName: user.lastName,
-          role: (user.roleId as any)?.name || 'user',
+          email: user.email || '',
+          firstName: user.firstName || '',
+          lastName: user.lastName || '',
+          role: roleName,
         });
+        
+        this.logger.log(`✅ Usuario sincronizado: ${user.email} con rol: ${roleName}`);
       }
       this.logger.log(`✅ Sincronizados ${users.length} usuarios a Neo4j`);
     } finally {
@@ -509,6 +581,13 @@ export class Neo4jService implements OnModuleInit, OnModuleDestroy {
         
         this.logger.log(`🔄 Sincronizando reservación: ${reservationId}`);
         
+        // Log detallado del status recibido para debug
+        this.logger.log(`📊 [Sync] Status recibido para reservación ${reservationId}:`, {
+          rawStatus: reservation.status,
+          statusType: typeof reservation.status,
+          hasStatus: 'status' in reservation
+        });
+        
         // Crear nodo de reservación
         const reservationQuery = `
           MERGE (r:Reservation {id: $id})
@@ -518,14 +597,39 @@ export class Neo4jService implements OnModuleInit, OnModuleDestroy {
               r.status = $status
           RETURN r
         `;
+        // Convertir fechas a string ISO usando Temporal
+        const checkInDateValue = reservation.checkInDate as any;
+        const checkInDate = checkInDateValue
+          ? (checkInDateValue instanceof Date
+              ? TemporalUtils.dateToPlainDate(checkInDateValue)
+              : checkInDateValue instanceof Temporal.PlainDate
+              ? checkInDateValue
+              : TemporalUtils.parsePlainDate(String(checkInDateValue))
+            ).toString() + 'T00:00:00.000Z'
+          : null;
+        
+        const checkOutDateValue = reservation.checkOutDate as any;
+        const checkOutDate = checkOutDateValue
+          ? (checkOutDateValue instanceof Date
+              ? TemporalUtils.dateToPlainDate(checkOutDateValue)
+              : checkOutDateValue instanceof Temporal.PlainDate
+              ? checkOutDateValue
+              : TemporalUtils.parsePlainDate(String(checkOutDateValue))
+            ).toString() + 'T00:00:00.000Z'
+          : null;
+        
+        // Normalizar status a minúsculas para consistencia
+        const rawStatus = reservation.status || 'pending';
+        const normalizedStatus = rawStatus.toLowerCase();
+        
         await session.run(reservationQuery, {
           id: reservationId,
-          checkInDate: reservation.checkInDate ? new Date(reservation.checkInDate).toISOString() : null,
-          checkOutDate: reservation.checkOutDate ? new Date(reservation.checkOutDate).toISOString() : null,
+          checkInDate,
+          checkOutDate,
           totalPrice: reservation.totalPrice || 0,
-          status: reservation.status || 'pending',
+          status: normalizedStatus, // Usar status normalizado
         });
-        this.logger.log(`✅ Nodo de reservación creado/actualizado: ${reservationId}`);
+        this.logger.log(`✅ Nodo de reservación creado/actualizado: ${reservationId} con status: ${normalizedStatus} (raw: ${rawStatus})`);
 
         // Crear relación Usuario -> Reservación
         if (reservation.userId) {
@@ -846,32 +950,57 @@ export class Neo4jService implements OnModuleInit, OnModuleDestroy {
         };
       }
       
-      // Consulta mejorada: obtener usuario y todas las reservaciones del día actual
-      // Filtrar por checkInDate del día actual, incluyendo todos los estados (pending, confirmed, cancelled, completed)
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
-      const todayDateOnly = today.toISOString().split('T')[0]; // YYYY-MM-DD
+      // Filtrar solo reservaciones del día actual usando Temporal
+      const today = TemporalUtils.today();
+      const todayDateOnly = TemporalUtils.formatDate(today); // YYYY-MM-DD
       
-      this.logger.log(`📅 Filtrando reservaciones del día actual para usuario ${userId}: ${todayDateOnly}`);
+      this.logger.log(`📅 Obteniendo reservaciones del día actual (${todayDateOnly}) para usuario ${userId}`);
       
+      // Consulta que devuelve el usuario y solo reservaciones del día actual
       const query = `
         MATCH (u:User {id: $userId})
-        OPTIONAL MATCH (u)-[r1:RESERVÓ]->(res:Reservation)
-        WHERE res IS NULL OR (res.checkInDate IS NOT NULL AND res.checkInDate STARTS WITH $todayDateOnly)
+        MATCH (u)-[r1:RESERVÓ]->(res:Reservation)
+        WHERE res.checkInDate IS NOT NULL
+          AND res.checkInDate STARTS WITH $todayDateOnly
         OPTIONAL MATCH (res)-[r2:RESERVADA_EN]->(room:Room)
-        RETURN u, res, room, r1, r2, labels(u) as userLabels, 
-               CASE WHEN res IS NOT NULL THEN labels(res) ELSE [] END as resLabels, 
+        RETURN u, res, room, r1, r2, 
+               u.id as userId,
+               res.id as resId,
+               room.id as roomId,
+               labels(u) as userLabels, 
+               labels(res) as resLabels, 
                CASE WHEN room IS NOT NULL THEN labels(room) ELSE [] END as roomLabels
         ORDER BY res.checkInDate DESC
       `;
       const result = await session.run(query, { userId, todayDateOnly });
       
-      this.logger.log(`📊 Registros encontrados para usuario ${userId}: ${result.records.length}`);
+      this.logger.log(`📊 Registros encontrados para usuario ${userId} (día ${todayDateOnly}): ${result.records.length}`);
       
-      // Log detallado de lo que se encontró
-      const hasReservations = result.records.some(r => r.get('res') !== null);
-      const hasRooms = result.records.some(r => r.get('room') !== null);
+      // Log detallado de lo que se encontró - verificar tanto el nodo como el ID
+      const hasReservations = result.records.some(r => {
+        const res = r.get('res');
+        const resId = r.get('resId');
+        return res !== null && resId !== null && resId !== undefined;
+      });
+      const hasRooms = result.records.some(r => {
+        const room = r.get('room');
+        const roomId = r.get('roomId');
+        return room !== null && roomId !== null && roomId !== undefined;
+      });
       this.logger.log(`📊 Detalle: ${hasReservations ? 'Tiene reservaciones' : 'Sin reservaciones'}, ${hasRooms ? 'Tiene habitaciones' : 'Sin habitaciones'}`);
+      
+      // Log adicional para debug - mostrar todos los registros con detalles
+      if (result.records.length > 0) {
+        this.logger.log(`📊 Analizando ${result.records.length} registros...`);
+        result.records.forEach((record, idx) => {
+          const res = record.get('res');
+          const room = record.get('room');
+          const resId = record.get('resId');
+          const roomId = record.get('roomId');
+          const userId = record.get('userId');
+          this.logger.log(`📊 Registro ${idx + 1}: userId=${userId}, resId=${resId}, roomId=${roomId}, hasResNode=${!!res}, hasRoomNode=${!!room}, resIdType=${typeof resId}`);
+        });
+      }
       
       const nodes = new Map();
       const relationships: any[] = [];
@@ -880,85 +1009,149 @@ export class Neo4jService implements OnModuleInit, OnModuleDestroy {
       if (userCheckResult.records.length > 0) {
         const userNode = userCheckResult.records[0].get('u');
         if (userNode) {
-          nodes.set(userNode.identity.toString(), {
-            id: userNode.identity.toString(),
-            label: `${userNode.properties.firstName || ''} ${userNode.properties.lastName || ''}`.trim() || userNode.properties.email || 'Usuario',
-            group: 'user',
-            type: 'User',
-            properties: userNode.properties,
-          });
+          const userId = userNode.properties?.id || userNode.identity?.toString();
+          if (userId) {
+            nodes.set(userId, {
+              id: userId,
+              label: `${userNode.properties.firstName || ''} ${userNode.properties.lastName || ''}`.trim() || userNode.properties.email || 'Usuario',
+              group: 'user',
+              type: 'User',
+              properties: userNode.properties,
+            });
+          }
         }
       }
 
-      result.records.forEach(record => {
+      result.records.forEach((record, recordIdx) => {
         const userNode = record.get('u');
         const resNode = record.get('res');
         const roomNode = record.get('room');
         const rel1 = record.get('r1');
         const rel2 = record.get('r2');
+        
+        // Si no hay reservación, saltar este registro
+        if (!resNode) {
+          return;
+        }
+        
+        // Obtener IDs directamente de los nodos (más confiable que los campos del RETURN)
+        const userId = userNode?.properties?.id || userNode?.identity?.toString() || record.get('userId');
+        const resId = resNode.properties?.id || resNode.identity?.toString() || record.get('resId');
+        const roomId = roomNode?.properties?.id || roomNode?.identity?.toString() || record.get('roomId');
 
-        // Agregar nodo de usuario (si no está ya agregado)
-        if (userNode && !nodes.has(userNode.identity.toString())) {
-          nodes.set(userNode.identity.toString(), {
-            id: userNode.identity.toString(),
-            label: `${userNode.properties.firstName || ''} ${userNode.properties.lastName || ''}`.trim() || userNode.properties.email || 'Usuario',
-            group: 'user',
-            type: 'User',
-            properties: userNode.properties,
-          });
+        // Log detallado
+        this.logger.log(`📊 Procesando registro ${recordIdx + 1}: userId=${userId}, resId=${resId}, roomId=${roomId}`);
+
+        // Validar IDs críticos
+        if (!userId || !resId) {
+          this.logger.warn(`⚠️ Registro ${recordIdx + 1} omitido: userId=${!!userId}, resId=${!!resId}`);
+          return;
         }
 
-        // Agregar nodo de reservación
-        if (resNode && !nodes.has(resNode.identity.toString())) {
-          const checkIn = resNode.properties.checkInDate ? new Date(resNode.properties.checkInDate).toLocaleDateString('es-CO') : 'N/A';
-          const status = resNode.properties.status || 'pending';
-          nodes.set(resNode.identity.toString(), {
-            id: resNode.identity.toString(),
-            label: `Reserva ${checkIn} (${status})`,
-            group: 'reservation',
-            type: 'Reservation',
-            properties: resNode.properties,
-          });
-          
-          // Log para debug
-          this.logger.log(`📊 Reservación encontrada: ID=${resNode.identity.toString()}, checkInDate=${resNode.properties.checkInDate}, status=${status}`);
+        // Agregar nodo de usuario (si no está ya agregado)
+        if (userNode && userId) {
+          if (!nodes.has(userId)) {
+            nodes.set(userId, {
+              id: userId,
+              label: `${userNode.properties.firstName || ''} ${userNode.properties.lastName || ''}`.trim() || userNode.properties.email || 'Usuario',
+              group: 'user',
+              type: 'User',
+              properties: userNode.properties,
+            });
+            this.logger.log(`✅ Nodo de usuario agregado: ${userId}`);
+          }
+        }
+
+        // Agregar nodo de reservación (SIEMPRE que tengamos resNode y resId)
+        if (resNode && resId) {
+          if (!nodes.has(resId)) {
+            const checkIn = resNode.properties.checkInDate
+              ? TemporalUtils.formatDateLocalized(
+                  TemporalUtils.parsePlainDate(resNode.properties.checkInDate)
+                )
+              : 'N/A';
+            // Normalizar status a minúsculas para consistencia
+            const rawStatus = resNode.properties.status || 'pending';
+            const normalizedStatus = rawStatus.toLowerCase();
+            
+            nodes.set(resId, {
+              id: resId,
+              label: `Reserva ${checkIn} (${normalizedStatus})`,
+              group: 'reservation',
+              type: 'Reservation',
+              properties: {
+                ...resNode.properties,
+                status: normalizedStatus, // Asegurar que el status esté normalizado
+              },
+            });
+            
+            this.logger.log(`✅ Nodo de reservación agregado: ID=${resId}, checkInDate=${resNode.properties.checkInDate}, status=${normalizedStatus} (raw: ${rawStatus})`);
+          } else {
+            this.logger.log(`ℹ️ Nodo de reservación ya existe: ${resId}`);
+          }
+        } else {
+          this.logger.warn(`⚠️ No se puede agregar nodo de reservación: resNode=${!!resNode}, resId=${resId}`);
         }
 
         // Agregar nodo de habitación
-        if (roomNode && !nodes.has(roomNode.identity.toString())) {
-          nodes.set(roomNode.identity.toString(), {
-            id: roomNode.identity.toString(),
-            label: roomNode.properties.name || 'Habitación',
-            group: 'room',
-            type: 'Room',
-            properties: roomNode.properties,
-          });
+        if (roomNode && roomId) {
+          if (!nodes.has(roomId)) {
+            nodes.set(roomId, {
+              id: roomId,
+              label: roomNode.properties.name || roomNode.properties.roomNumber || 'Habitación',
+              group: 'room',
+              type: 'Room',
+              properties: roomNode.properties,
+            });
+            this.logger.log(`✅ Nodo de habitación agregado: ID=${roomId}, name=${roomNode.properties.name || roomNode.properties.roomNumber}`);
+          }
         }
 
-        // Agregar relaciones
-        if (rel1 && userNode && resNode) {
-          relationships.push({
-            id: `rel-${rel1.identity.toString()}`,
-            from: userNode.identity.toString(),
-            to: resNode.identity.toString(),
-            label: 'RESERVÓ',
-            type: 'RESERVÓ',
-          });
+        // Agregar relaciones usando los IDs consistentes (solo si ambos nodos existen)
+        if (rel1 && userNode && resNode && userId && resId) {
+          // Verificar que no exista ya esta relación
+          const relExists = relationships.some(r => r.from === userId && r.to === resId);
+          if (!relExists) {
+            relationships.push({
+              id: `rel-user-res-${userId}-${resId}`,
+              from: userId,
+              to: resId,
+              label: 'RESERVÓ',
+              type: 'RESERVÓ',
+            });
+            this.logger.log(`✅ Relación Usuario->Reservación agregada: ${userId} -> ${resId}`);
+          }
         }
 
-        if (rel2 && resNode && roomNode) {
-          relationships.push({
-            id: `rel-${rel2.identity.toString()}`,
-            from: resNode.identity.toString(),
-            to: roomNode.identity.toString(),
-            label: 'RESERVADA_EN',
-            type: 'RESERVADA_EN',
-          });
+        if (rel2 && resNode && roomNode && resId && roomId) {
+          // Verificar que no exista ya esta relación
+          const relExists = relationships.some(r => r.from === resId && r.to === roomId);
+          if (!relExists) {
+            relationships.push({
+              id: `rel-res-room-${resId}-${roomId}`,
+              from: resId,
+              to: roomId,
+              label: 'RESERVADA_EN',
+              type: 'RESERVADA_EN',
+            });
+            this.logger.log(`✅ Relación Reservación->Habitación agregada: ${resId} -> ${roomId}`);
+          }
         }
       });
 
       const finalNodes = Array.from(nodes.values());
+      
+      // Log detallado del resultado
       this.logger.log(`✅ Grafo generado: ${finalNodes.length} nodos, ${relationships.length} relaciones`);
+      this.logger.log(`📊 Desglose de nodos:`, {
+        usuarios: finalNodes.filter(n => n.type === 'User').length,
+        reservaciones: finalNodes.filter(n => n.type === 'Reservation').length,
+        habitaciones: finalNodes.filter(n => n.type === 'Room').length
+      });
+      this.logger.log(`📊 Desglose de relaciones:`, {
+        usuarioReservacion: relationships.filter(r => r.type === 'RESERVÓ').length,
+        reservacionHabitacion: relationships.filter(r => r.type === 'RESERVADA_EN').length
+      });
 
       return {
         nodes: finalNodes,

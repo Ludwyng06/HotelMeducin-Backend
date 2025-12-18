@@ -10,6 +10,8 @@ import { GuestsService } from '@services/guests.service';
 import { CreateGuestDto } from '@models/guests/dto/guest.dto';
 import { Neo4jService } from '@services/neo4j.service';
 import { NotificationsService } from '@modules/notifications/notifications.service';
+import { TemporalUtils } from '@common/utils/temporal.utils';
+import { Temporal } from '@js-temporal/polyfill';
 
 @Injectable()
 export class ReservationsService {
@@ -43,12 +45,31 @@ export class ReservationsService {
     // Asegurar coherencia
     if (guestCount > maxCapacity) guestCount = maxCapacity;
 
+    // Convertir fechas a PlainDate si vienen como strings o Date
+    const checkInDateValue = createReservationDto.checkInDate as any;
+    const checkInDate = typeof checkInDateValue === 'string'
+      ? TemporalUtils.parsePlainDate(checkInDateValue)
+      : checkInDateValue instanceof Date
+      ? TemporalUtils.dateToPlainDate(checkInDateValue)
+      : checkInDateValue instanceof Temporal.PlainDate
+      ? checkInDateValue
+      : TemporalUtils.parsePlainDate(String(checkInDateValue));
+    
+    const checkOutDateValue = createReservationDto.checkOutDate as any;
+    const checkOutDate = typeof checkOutDateValue === 'string'
+      ? TemporalUtils.parsePlainDate(checkOutDateValue)
+      : checkOutDateValue instanceof Date
+      ? TemporalUtils.dateToPlainDate(checkOutDateValue)
+      : checkOutDateValue instanceof Temporal.PlainDate
+      ? checkOutDateValue
+      : TemporalUtils.parsePlainDate(String(checkOutDateValue));
+    
     const createdReservation = new this.reservationModel({
       ...createReservationDto,
       userId: new Types.ObjectId(createReservationDto.userId),
       roomId: new Types.ObjectId(createReservationDto.roomId),
-      checkInDate: new Date(createReservationDto.checkInDate),
-      checkOutDate: new Date(createReservationDto.checkOutDate),
+      checkInDate,
+      checkOutDate,
       guestCount,
       maxCapacity,
       serviceIds: createReservationDto.serviceIds?.map(id => new Types.ObjectId(id)) || []
@@ -85,9 +106,10 @@ export class ReservationsService {
     await this.redisService.invalidateAvailableRoomsCache();
     
     // 🚀 MÉTRICAS EN TIEMPO REAL: Actualizar contadores
-    const today = new Date().toISOString().split('T')[0];
-    await this.redisService.incrementDailyReservations(today);
-    await this.redisService.addDailyRevenue(today, createReservationDto.totalPrice);
+    const today = TemporalUtils.today();
+    const todayString = TemporalUtils.formatDate(today);
+    await this.redisService.incrementDailyReservations(todayString);
+    await this.redisService.addDailyRevenue(todayString, createReservationDto.totalPrice);
     await this.redisService.incrementOccupiedRooms();
     
     // Métricas adicionales por categoría de habitación
@@ -95,7 +117,7 @@ export class ReservationsService {
     if (room?.roomId) {
       const categoryId = (room.roomId as any).categoryId;
       if (categoryId) {
-        await this.redisService.incrementDailyReservations(`${today}:category:${categoryId}`);
+        await this.redisService.incrementDailyReservations(`${todayString}:category:${categoryId}`);
         console.log('📊 Métricas por categoría actualizadas:', categoryId);
       }
     }
@@ -307,15 +329,43 @@ export class ReservationsService {
   }
 
   async update(id: string, updateData: Partial<Reservation>): Promise<Reservation | null> {
-    return this.reservationModel
+    const updatedReservation = await this.reservationModel
       .findByIdAndUpdate(id, updateData, { new: true })
       .populate('userId')
       .populate('roomId')
       .exec();
+    
+    // IMPORTANTE: Sincronizar el estado actualizado a Neo4j inmediatamente
+    if (updatedReservation) {
+      await this.syncReservationToNeo4j(updatedReservation);
+    }
+    
+    return updatedReservation;
   }
 
   async remove(id: string): Promise<Reservation | null> {
-    return this.reservationModel.findByIdAndDelete(id).exec();
+    const deletedReservation = await this.reservationModel.findByIdAndDelete(id).exec();
+    
+    // IMPORTANTE: Eliminar también de Neo4j si existe
+    if (deletedReservation && this.neo4jService && this.neo4jService.isConnected()) {
+      try {
+        const session = this.neo4jService.getSession();
+        if (session) {
+          const reservationId = deletedReservation._id?.toString() || deletedReservation.id?.toString();
+          await session.run(
+            'MATCH (r:Reservation {id: $id}) DETACH DELETE r',
+            { id: reservationId }
+          );
+          await session.close();
+          console.log(`✅ Reservación ${reservationId} eliminada de Neo4j`);
+        }
+      } catch (error) {
+        console.error(`❌ Error eliminando reservación de Neo4j:`, error);
+        // No lanzar error, solo loguear
+      }
+    }
+    
+    return deletedReservation;
   }
 
   /**
@@ -348,9 +398,21 @@ export class ReservationsService {
     }
 
     // Validar que no falten menos de 24 horas para el check-in
-    const checkInDate = new Date(reservation.checkInDate);
-    const now = new Date();
-    const hoursUntilCheckIn = (checkInDate.getTime() - now.getTime()) / (1000 * 60 * 60);
+    const checkInDateValue = reservation.checkInDate as any;
+    let checkInDate: Date;
+    if (checkInDateValue instanceof Date) {
+      checkInDate = checkInDateValue;
+    } else if (checkInDateValue instanceof Temporal.PlainDate) {
+      checkInDate = TemporalUtils.plainDateToDate(checkInDateValue);
+    } else {
+      checkInDate = TemporalUtils.plainDateToDate(TemporalUtils.parsePlainDate(String(checkInDateValue)));
+    }
+    
+    const now = TemporalUtils.now();
+    const checkInZoned = TemporalUtils.dateToZonedDateTime(checkInDate);
+    const checkInInstantMs = checkInZoned.toInstant().epochMilliseconds;
+    const nowInstantMs = now.toInstant().epochMilliseconds;
+    const hoursUntilCheckIn = (checkInInstantMs - nowInstantMs) / (1000 * 60 * 60);
 
     if (hoursUntilCheckIn < 24) {
       throw new BadRequestException(
@@ -364,7 +426,7 @@ export class ReservationsService {
         id,
         { 
           status: 'cancelled',
-          cancelledAt: new Date(),
+          cancelledAt: TemporalUtils.zonedDateTimeToDate(TemporalUtils.now()),
           cancellationReason: 'Cancelada por el cliente'
         },
         { new: true }
@@ -372,6 +434,11 @@ export class ReservationsService {
       .populate('userId')
       .populate('roomId')
       .exec();
+
+    // IMPORTANTE: Sincronizar el estado actualizado a Neo4j inmediatamente
+    if (cancelledReservation) {
+      await this.syncReservationToNeo4j(cancelledReservation);
+    }
 
     // Invalidar cache de la habitación
     if (cancelledReservation && cancelledReservation.roomId) {
@@ -385,11 +452,19 @@ export class ReservationsService {
     return cancelledReservation;
   }
 
-  async getReservationsByDateRange(startDate: Date, endDate: Date): Promise<Reservation[]> {
+  async getReservationsByDateRange(startDate: Date | Temporal.PlainDate, endDate: Date | Temporal.PlainDate): Promise<Reservation[]> {
+    // Convertir a Date si viene como PlainDate (para compatibilidad con MongoDB)
+    const start = startDate instanceof Temporal.PlainDate 
+      ? TemporalUtils.plainDateToDate(startDate)
+      : startDate;
+    const end = endDate instanceof Temporal.PlainDate
+      ? TemporalUtils.plainDateToDate(endDate)
+      : endDate;
+    
     return this.reservationModel
       .find({
-        checkInDate: { $gte: startDate },
-        checkOutDate: { $lte: endDate },
+        checkInDate: { $gte: start },
+        checkOutDate: { $lte: end },
         status: { $in: ['confirmed', 'completed'] }
       })
       .populate('userId')
@@ -397,7 +472,7 @@ export class ReservationsService {
       .exec();
   }
 
-  async getOccupiedDatesByRoom(roomId: string): Promise<any[]> {
+  async getOccupiedDatesByRoom(roomId: string): Promise<string[]> {
     console.log('🔍 Buscando fechas ocupadas para roomId:', roomId);
     
     // 1. Intentar obtener del cache de Redis
@@ -420,27 +495,41 @@ export class ReservationsService {
     
     console.log('📋 Reservas encontradas:', reservations.length);
     
-    // Generar array de fechas ocupadas
-    const occupiedDates: string[] = [];
+    // 3. Generar array de fechas ocupadas usando Temporal
+    const occupiedDates: Temporal.PlainDate[] = [];
     
     reservations.forEach(reservation => {
-      const checkIn = new Date(reservation.checkInDate);
-      const checkOut = new Date(reservation.checkOutDate);
+      // Convertir a PlainDate (el schema ya maneja la conversión automática)
+      const checkInValue = reservation.checkInDate as any;
+      const checkIn = checkInValue instanceof Date
+        ? TemporalUtils.dateToPlainDate(checkInValue)
+        : checkInValue instanceof Temporal.PlainDate
+        ? checkInValue
+        : TemporalUtils.parsePlainDate(String(checkInValue));
       
-      // Generar todas las fechas entre checkIn y checkOut (excluyendo checkOut)
-      const currentDate = new Date(checkIn);
-      while (currentDate < checkOut) {
-        occupiedDates.push(currentDate.toISOString().split('T')[0]); // Formato YYYY-MM-DD
-        currentDate.setDate(currentDate.getDate() + 1);
-      }
+      const checkOutValue = reservation.checkOutDate as any;
+      const checkOut = checkOutValue instanceof Date
+        ? TemporalUtils.dateToPlainDate(checkOutValue)
+        : checkOutValue instanceof Temporal.PlainDate
+        ? checkOutValue
+        : TemporalUtils.parsePlainDate(String(checkOutValue));
+      
+      // Generar rango de fechas usando Temporal
+      const dateRange = TemporalUtils.dateRange(checkIn, checkOut);
+      occupiedDates.push(...dateRange);
     });
     
-    console.log('📅 Fechas ocupadas generadas:', occupiedDates);
+    // Eliminar duplicados y convertir a strings
+    const uniqueDates = Array.from(
+      new Set(occupiedDates.map(d => TemporalUtils.formatDate(d)))
+    );
     
-    // 3. Guardar en cache de Redis (10 minutos)
-    await this.redisService.cacheRoomOccupiedDates(roomId, occupiedDates, 600);
+    console.log('📅 Fechas ocupadas generadas:', uniqueDates.length);
     
-    return occupiedDates;
+    // 4. Guardar en cache de Redis (10 minutos)
+    await this.redisService.cacheRoomOccupiedDates(roomId, uniqueDates, 600);
+    
+    return uniqueDates;
   }
 
   // 🔍 VALIDAR DUPLICADOS DE DOCUMENTOS, TELÉFONOS Y EMAILS
@@ -532,16 +621,29 @@ export class ReservationsService {
     }
     
     // Verificar que no haya pasado más de 1 hora si es reserva del mismo día
-    const checkInDate = new Date(reservation.checkInDate);
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
+    const checkInDate = reservation.checkInDate instanceof Date
+      ? reservation.checkInDate
+      : reservation.checkInDate instanceof Temporal.PlainDate
+      ? TemporalUtils.plainDateToDate(reservation.checkInDate)
+      : new Date(reservation.checkInDate as any);
+    const today = TemporalUtils.today();
+    const todayDate = TemporalUtils.plainDateToDate(today);
     
-    if (checkInDate.getTime() === today.getTime()) {
+    if (checkInDate.getTime() === todayDate.getTime()) {
       // Reserva del mismo día - verificar que no haya pasado 1 hora
-      const reservationTime = new Date((reservation as any).createdAt || reservation.checkInDate);
-      const oneHourLater = new Date(reservationTime.getTime() + 60 * 60 * 1000);
+      const createdAt = (reservation as any).createdAt;
+      const checkIn = reservation.checkInDate instanceof Date
+        ? reservation.checkInDate
+        : reservation.checkInDate instanceof Temporal.PlainDate
+        ? TemporalUtils.plainDateToDate(reservation.checkInDate)
+        : new Date(reservation.checkInDate as any);
+      const reservationTime = createdAt 
+        ? TemporalUtils.dateToZonedDateTime(new Date(createdAt))
+        : TemporalUtils.dateToZonedDateTime(checkIn);
+      const oneHourLater = reservationTime.add({ hours: 1 });
+      const nowZoned = TemporalUtils.now();
       
-      if (new Date() > oneHourLater) {
+      if (nowZoned.toInstant().epochMilliseconds > oneHourLater.toInstant().epochMilliseconds) {
         throw new BadRequestException(
           'Han pasado más de 1 hora desde la creación. La reserva debe ser cancelada.'
         );
@@ -553,17 +655,43 @@ export class ReservationsService {
       throw new BadRequestException('Método de pago inválido. Solo se permiten: efectivo o transferencia');
     }
     
+    // Log para debug - verificar qué método de pago se está recibiendo
+    console.log(`💰 [Confirm Reservation Service] paymentInfo recibido:`, JSON.stringify(paymentInfo));
+    console.log(`💰 [Confirm Reservation Service] paymentInfo.method: ${paymentInfo?.method}`);
+    
     // Actualizar la reserva
     reservation.status = 'confirmed';
     reservation.confirmedBy = new Types.ObjectId(confirmedBy);
-    reservation.confirmedAt = new Date();
+    reservation.confirmedAt = TemporalUtils.zonedDateTimeToDate(TemporalUtils.now());
     // Siempre asignar un método de pago (efectivo por defecto si no se proporciona)
     reservation.paymentMethod = paymentInfo?.method || 'efectivo';
+    
+    // Log para verificar qué se está guardando
+    console.log(`💰 [Confirm Reservation Service] Método de pago guardado en BD: ${reservation.paymentMethod}`);
+    
     if (paymentInfo?.notes) {
       reservation.paymentNotes = paymentInfo.notes;
     }
     
     const savedReservation = await reservation.save();
+    
+    // IMPORTANTE: Sincronizar el estado actualizado a Neo4j inmediatamente
+    try {
+      // Convertir documento de Mongoose a objeto plano para la sincronización
+      const reservationForSync = typeof (savedReservation as any).toObject === 'function' 
+        ? (savedReservation as any).toObject() 
+        : savedReservation;
+      
+      // Log para verificar el status antes de sincronizar
+      console.log(`🔄 [Sync] Reservación ${savedReservation._id} - Status antes de sync: ${reservationForSync.status}`);
+      console.log(`🔄 [Sync] Tipo de objeto:`, typeof (savedReservation as any).toObject === 'function' ? 'Mongoose Document' : 'Plain Object');
+      
+      await this.neo4jService.syncReservationsFromMongo([reservationForSync]);
+      console.log(`✅ Reservación ${savedReservation._id} sincronizada a Neo4j con status: ${reservationForSync.status}`);
+    } catch (error) {
+      console.error(`❌ Error sincronizando reservación a Neo4j:`, error);
+      // No lanzar error, solo loguear para no interrumpir el flujo
+    }
     
     // Invalidar cache de la habitación
     if (savedReservation.roomId) {
@@ -598,30 +726,42 @@ export class ReservationsService {
    * Verificar reservas del mismo día que expiraron (1 hora)
    */
   async expireSameDayReservations(): Promise<void> {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const tomorrow = new Date(today);
-    tomorrow.setDate(tomorrow.getDate() + 1);
+    const today = TemporalUtils.today();
+    const todayDate = TemporalUtils.plainDateToDate(today);
+    const tomorrow = TemporalUtils.addDays(today, 1);
+    const tomorrowDate = TemporalUtils.plainDateToDate(tomorrow);
     
     // Encontrar reservas pendientes del mismo día
     const sameDayReservations = await this.reservationModel.find({
       status: 'pending',
-      checkInDate: { $gte: today, $lt: tomorrow }
+      checkInDate: { $gte: todayDate, $lt: tomorrowDate }
     });
     
-    const now = new Date();
+    const now = TemporalUtils.now();
     let expiredCount = 0;
     
     for (const reservation of sameDayReservations) {
-      const reservationTime = new Date((reservation as any).createdAt || reservation.checkInDate);
-      const oneHourLater = new Date(reservationTime.getTime() + 60 * 60 * 1000);
+      const createdAt = (reservation as any).createdAt;
+      const checkIn = reservation.checkInDate instanceof Date
+        ? reservation.checkInDate
+        : reservation.checkInDate instanceof Temporal.PlainDate
+        ? TemporalUtils.plainDateToDate(reservation.checkInDate)
+        : new Date(reservation.checkInDate as any);
+      const reservationTime = createdAt 
+        ? TemporalUtils.dateToZonedDateTime(new Date(createdAt))
+        : TemporalUtils.dateToZonedDateTime(checkIn);
+      const oneHourLater = reservationTime.add({ hours: 1 });
+      const nowZoned = TemporalUtils.now();
       
-      if (now > oneHourLater) {
+      if (nowZoned.toInstant().epochMilliseconds > oneHourLater.toInstant().epochMilliseconds) {
         // Cancelar automáticamente
         reservation.status = 'cancelled';
-        reservation.cancelledAt = now;
+        reservation.cancelledAt = now instanceof Date ? now : TemporalUtils.zonedDateTimeToDate(now);
         reservation.cancellationReason = 'Expirada: No confirmada dentro de 1 hora';
         await reservation.save();
+        
+        // IMPORTANTE: Sincronizar el estado actualizado a Neo4j inmediatamente
+        await this.syncReservationToNeo4j(reservation);
         
         expiredCount++;
         console.log(`⚠️ Reserva ${reservation._id} cancelada automáticamente por expiración`);
@@ -637,6 +777,40 @@ export class ReservationsService {
     
     if (expiredCount > 0) {
       console.log(`⚠️ Total de reservas expiradas: ${expiredCount}`);
+    }
+  }
+
+  /**
+   * Método helper privado para sincronizar reservaciones a Neo4j
+   * Convierte documentos de Mongoose a objetos planos y sincroniza automáticamente
+   */
+  private async syncReservationToNeo4j(reservation: Reservation | ReservationDocument): Promise<void> {
+    try {
+      if (!this.neo4jService) {
+        console.warn('⚠️ Neo4jService no disponible, omitiendo sincronización');
+        return;
+      }
+
+      // Verificar conexión a Neo4j
+      if (!this.neo4jService.isConnected()) {
+        console.warn('⚠️ Neo4j no está conectado, omitiendo sincronización');
+        return;
+      }
+
+      // Convertir documento de Mongoose a objeto plano si es necesario
+      const reservationForSync = typeof (reservation as any).toObject === 'function'
+        ? (reservation as any).toObject() 
+        : JSON.parse(JSON.stringify(reservation));
+      
+      // Log para debug
+      const reservationId = (reservation as any)._id?.toString() || (reservation as any).id?.toString() || 'unknown';
+      console.log(`🔄 [Sync] Sincronizando reservación ${reservationId} con status: ${reservationForSync.status}`);
+      
+      await this.neo4jService.syncReservationsFromMongo([reservationForSync]);
+      console.log(`✅ Reservación ${reservationId} sincronizada a Neo4j con status: ${reservationForSync.status}`);
+    } catch (error) {
+      console.error(`❌ Error sincronizando reservación a Neo4j:`, error);
+      // No lanzar error, solo loguear para no interrumpir el flujo principal
     }
   }
 }

@@ -1,5 +1,8 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { Document, Types } from 'mongoose';
+import { TemporalDateProp } from '@common/schemas/temporal.schema';
+import '@js-temporal/polyfill';
+import { Temporal } from '@js-temporal/polyfill';
 
 export type ReservationDocument = Reservation & Document;
 
@@ -13,11 +16,11 @@ export class Reservation {
   @Prop({ type: Types.ObjectId, ref: 'Room', required: true })
   roomId: Types.ObjectId;
 
-  @Prop({ required: true })
-  checkInDate: Date;
+  @TemporalDateProp({ required: true })
+  checkInDate: Temporal.PlainDate;
 
-  @Prop({ required: true })
-  checkOutDate: Date;
+  @TemporalDateProp({ required: true })
+  checkOutDate: Temporal.PlainDate;
 
   @Prop({ required: true })
   guestCount: number;

@@ -1,5 +1,6 @@
 import { Controller, Get, Post, Delete, Body, Param } from '@nestjs/common';
 import { RedisService } from '@config/redis.service';
+import { TemporalUtils } from '@common/utils/temporal.utils';
 
 @Controller('redis-test')
 export class RedisTestController {
@@ -14,7 +15,7 @@ export class RedisTestController {
         success: true,
         message: 'Redis está funcionando correctamente',
         test: result,
-        timestamp: new Date().toISOString()
+        timestamp: TemporalUtils.now().toInstant().toString()
       };
     } catch (error) {
       return {
@@ -35,7 +36,7 @@ export class RedisTestController {
         message: 'Datos guardados en cache',
         original: data.value,
         cached: cached ? JSON.parse(cached) : null,
-        timestamp: new Date().toISOString()
+        timestamp: TemporalUtils.now().toInstant().toString()
       };
     } catch (error) {
       return {
@@ -55,7 +56,7 @@ export class RedisTestController {
         key,
         cached: cached ? JSON.parse(cached) : null,
         exists: !!cached,
-        timestamp: new Date().toISOString()
+        timestamp: TemporalUtils.now().toInstant().toString()
       };
     } catch (error) {
       return {
@@ -73,7 +74,7 @@ export class RedisTestController {
       return {
         success: true,
         message: `Cache eliminado para key: ${key}`,
-        timestamp: new Date().toISOString()
+        timestamp: TemporalUtils.now().toInstant().toString()
       };
     } catch (error) {
       return {
@@ -103,7 +104,7 @@ export class RedisTestController {
         originalDates: mockDates,
         cachedDates,
         match: JSON.stringify(mockDates) === JSON.stringify(cachedDates),
-        timestamp: new Date().toISOString()
+        timestamp: TemporalUtils.now().toInstant().toString()
       };
     } catch (error) {
       return {
@@ -133,7 +134,7 @@ export class RedisTestController {
           exists: exists,
           del: 'OK'
         },
-        timestamp: new Date().toISOString()
+        timestamp: TemporalUtils.now().toInstant().toString()
       };
     } catch (error) {
       return {

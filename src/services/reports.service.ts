@@ -8,6 +8,8 @@ import { User, UserDocument } from '@models/users/user.schema';
 import { Reservation, ReservationDocument } from '@models/reservations/reservation.schema';
 import { Room, RoomDocument } from '@models/rooms/room.schema';
 import { Service, ServiceDocument } from '@models/services/service.schema';
+import { TemporalUtils } from '@common/utils/temporal.utils';
+import { Temporal } from '@js-temporal/polyfill';
 
 @Injectable()
 export class ReportsService {
@@ -30,8 +32,10 @@ export class ReportsService {
       return cached;
     }
 
-    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
-    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    // Usar Temporal para calcular fechas
+    const today = TemporalUtils.today();
+    const thirtyDaysAgo = TemporalUtils.plainDateToDate(TemporalUtils.addDays(today, -30));
+    const sevenDaysAgo = TemporalUtils.plainDateToDate(TemporalUtils.addDays(today, -7));
     
     const result = await this.userModel.aggregate([
       {
@@ -96,29 +100,19 @@ export class ReportsService {
   }
 
   async getReservationsToday() {
-    // Usar exactamente la misma lógica que Neo4j para garantizar consistencia
-    // Neo4j filtra con: res.checkInDate STARTS WITH $todayDateOnly
-    // donde todayDateOnly se obtiene así:
-    //   const today = new Date();
-    //   today.setHours(0, 0, 0, 0);
-    //   const todayDateOnly = today.toISOString().split('T')[0]; // "2025-12-14"
-    // Esto significa que busca cualquier fecha que empiece con "2025-12-14"
-    // En Neo4j, las fechas se guardan como strings ISO completos (ej: "2025-12-14T00:00:00.000Z")
-    
-    // Usar EXACTAMENTE la misma lógica que Neo4j
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const todayDateOnly = today.toISOString().split('T')[0]; // YYYY-MM-DD
+    // Usar Temporal API para obtener fecha de hoy
+    // Esto garantiza consistencia con Neo4j que también usa la misma lógica
+    const today = TemporalUtils.today();
+    const todayDateOnly = TemporalUtils.formatDate(today); // YYYY-MM-DD
     
     // Crear rango para el día completo (igual que Neo4j calcula)
-    const tomorrow = new Date(today);
-    tomorrow.setDate(tomorrow.getDate() + 1);
-    const todayStart = today.toISOString(); // 2025-12-14T00:00:00.000Z
-    const tomorrowStart = tomorrow.toISOString(); // 2025-12-15T00:00:00.000Z
+    const tomorrow = TemporalUtils.addDays(today, 1);
+    const todayStart = TemporalUtils.plainDateToDate(today).toISOString(); // 2025-12-14T00:00:00.000Z
+    const tomorrowStart = TemporalUtils.plainDateToDate(tomorrow).toISOString(); // 2025-12-15T00:00:00.000Z
 
     console.log(`📅 [getReservationsToday] Filtrando reservaciones del día: ${todayDateOnly}`);
     console.log(`📅 [getReservationsToday] Rango: ${todayStart} a ${tomorrowStart}`);
-    console.log(`📅 [getReservationsToday] Fecha legible: ${today.toLocaleDateString('es-CO')}`);
+    console.log(`📅 [getReservationsToday] Fecha legible: ${TemporalUtils.formatDateLocalized(today)}`);
 
     // Usar agregación con $dateToString para comparar solo la parte de fecha (YYYY-MM-DD)
     // IMPORTANTE: Usar timezone: 'UTC' porque Neo4j guarda las fechas como strings ISO en UTC
@@ -150,7 +144,11 @@ export class ReportsService {
     if (allReservations.length > 0) {
       console.log(`📊 [getReservationsToday] Primeras reservaciones:`, allReservations.slice(0, 5).map(r => ({
         id: r._id?.toString() || 'N/A',
-        checkInDate: r.checkInDate instanceof Date ? r.checkInDate.toISOString() : r.checkInDate,
+        checkInDate: r.checkInDate instanceof Date 
+          ? TemporalUtils.formatDate(TemporalUtils.dateToPlainDate(r.checkInDate))
+          : r.checkInDate instanceof Temporal.PlainDate
+          ? TemporalUtils.formatDate(r.checkInDate)
+          : r.checkInDate,
         status: r.status,
         totalPrice: r.totalPrice
       })));
@@ -162,7 +160,11 @@ export class ReportsService {
         .limit(5)
         .lean();
       console.log(`📊 [getReservationsToday] DEBUG: Últimas 5 reservaciones en BD:`, sampleReservations.map(r => ({
-        checkInDate: r.checkInDate instanceof Date ? r.checkInDate.toISOString() : r.checkInDate,
+        checkInDate: r.checkInDate instanceof Date 
+          ? TemporalUtils.formatDate(TemporalUtils.dateToPlainDate(r.checkInDate))
+          : r.checkInDate instanceof Temporal.PlainDate
+          ? TemporalUtils.formatDate(r.checkInDate)
+          : r.checkInDate,
         status: r.status
       })));
     }
@@ -486,7 +488,7 @@ export class ReportsService {
   
   async generateAllReports() {
     console.log('🔄 Iniciando generación paralela de reportes...');
-    const startTime = Date.now();
+    const startTime = Temporal.Now.instant().epochMilliseconds;
 
     try {
       
@@ -497,12 +499,15 @@ export class ReportsService {
         popularServices
       ] = await Promise.all([
         this.getActiveUsers(),
-        this.getReservationsMonthly(new Date(Date.now() - 30 * 24 * 60 * 60 * 1000), new Date()),
+        this.getReservationsMonthly(
+          TemporalUtils.plainDateToDate(TemporalUtils.addDays(TemporalUtils.today(), -30)),
+          TemporalUtils.plainDateToDate(TemporalUtils.today())
+        ),
         this.getRoomOccupancy(),
         this.getPopularServices()
       ]);
 
-      const endTime = Date.now();
+      const endTime = Temporal.Now.instant().epochMilliseconds;
       const executionTime = endTime - startTime;
 
       console.log(`✅ Reportes generados en paralelo en ${executionTime}ms`);
@@ -516,7 +521,7 @@ export class ReportsService {
           roomOccupancy,
           popularServices
         },
-        timestamp: new Date()
+        timestamp: TemporalUtils.now().toInstant().toString()
       };
     } catch (error) {
       console.error('❌ Error en generación paralela de reportes:', error);
@@ -528,17 +533,18 @@ export class ReportsService {
   async updateRoomAvailabilityConcurrently(roomIds: string[]) {
     console.log(`🔄 Actualizando disponibilidad de ${roomIds.length} habitaciones concurrentemente...`);
     
-    const startTime = Date.now();
+    const startTime = Temporal.Now.instant().epochMilliseconds;
     
     try {
       
       const updatePromises = roomIds.map(async (roomId) => {
         
+        const today = TemporalUtils.plainDateToDate(TemporalUtils.today());
         const activeReservations = await this.reservationModel.countDocuments({
           roomId,
           status: { $in: ['confirmed', 'pending'] },
-          checkInDate: { $lte: new Date() },
-          checkOutDate: { $gte: new Date() }
+          checkInDate: { $lte: today },
+          checkOutDate: { $gte: today }
         });
 
         
@@ -572,7 +578,7 @@ export class ReportsService {
   async createReservationsConcurrently(reservationsData: any[]) {
     console.log(`🔄 Procesando ${reservationsData.length} reservaciones concurrentemente...`);
     
-    const startTime = Date.now();
+    const startTime = Temporal.Now.instant().epochMilliseconds;
     const results: any[] = [];
     const errors: any[] = [];
 
@@ -589,10 +595,25 @@ export class ReportsService {
         const batchPromises = batch.map(async (reservationData: any) => {
           try {
             
+            // Convertir fechas a Date para checkRoomAvailability (acepta Date)
+            const checkInValue = reservationData.checkInDate as any;
+            const checkIn = checkInValue instanceof Date
+              ? checkInValue
+              : checkInValue instanceof Temporal.PlainDate
+              ? TemporalUtils.plainDateToDate(checkInValue)
+              : TemporalUtils.plainDateToDate(TemporalUtils.parsePlainDate(String(checkInValue)));
+            
+            const checkOutValue = reservationData.checkOutDate as any;
+            const checkOut = checkOutValue instanceof Date
+              ? checkOutValue
+              : checkOutValue instanceof Temporal.PlainDate
+              ? TemporalUtils.plainDateToDate(checkOutValue)
+              : TemporalUtils.plainDateToDate(TemporalUtils.parsePlainDate(String(checkOutValue)));
+            
             const isAvailable = await this.checkRoomAvailability(
               reservationData.roomId,
-              new Date(reservationData.checkInDate),
-              new Date(reservationData.checkOutDate)
+              checkIn,
+              checkOut
             );
 
             if (!isAvailable) {

@@ -1,6 +1,8 @@
 import { Injectable, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { createClient, RedisClientType } from 'redis';
+import { TemporalUtils } from '@common/utils/temporal.utils';
+import { Temporal } from '@js-temporal/polyfill';
 
 @Injectable()
 export class RedisService implements OnModuleInit, OnModuleDestroy {
@@ -80,6 +82,47 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
       return JSON.parse(cached);
     }
     return null;
+  }
+
+  /**
+   * Cachea fechas ocupadas usando Temporal PlainDate
+   */
+  async cacheRoomOccupiedDatesTemporal(
+    roomId: string,
+    dates: Temporal.PlainDate[],
+    ttl: number = 600
+  ): Promise<void> {
+    const dateStrings = dates.map(d => TemporalUtils.formatDate(d));
+    await this.cacheRoomOccupiedDates(roomId, dateStrings, ttl);
+  }
+
+  /**
+   * Obtiene fechas ocupadas como PlainDate[]
+   */
+  async getCachedRoomOccupiedDatesTemporal(
+    roomId: string
+  ): Promise<Temporal.PlainDate[] | null> {
+    const dateStrings = await this.getCachedRoomOccupiedDates(roomId);
+    if (!dateStrings) return null;
+    
+    return dateStrings.map(s => TemporalUtils.parsePlainDate(s));
+  }
+
+  /**
+   * Cachea fecha actual para evitar cálculos repetidos
+   */
+  async cacheTodayDate(ttl: number = 86400): Promise<Temporal.PlainDate> {
+    const today = TemporalUtils.today();
+    const todayString = TemporalUtils.formatDate(today);
+    const cacheKey = 'temporal:today';
+    
+    const cached = await this.get(cacheKey);
+    if (cached) {
+      return TemporalUtils.parsePlainDate(cached);
+    }
+    
+    await this.set(cacheKey, todayString, ttl);
+    return today;
   }
 
   // 🚀 NUEVAS FUNCIONES AVANZADAS DE REDIS

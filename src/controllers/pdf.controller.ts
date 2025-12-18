@@ -7,6 +7,7 @@ import { GuestsService } from '@services/guests.service';
 import { Neo4jService } from '@services/neo4j.service';
 import { UsersService } from '@services/users.service';
 import { JwtAuthGuard } from '@common/guards/jwt-auth.guard';
+import { TemporalUtils } from '@common/utils/temporal.utils';
 
 @Controller('pdf')
 export class PdfController {
@@ -210,7 +211,7 @@ export class PdfController {
       const pdfBuffer = await this.pdfService.generateUserHistoryPDF(user, userNetworkData);
       
       // Generar nombre de archivo
-      const filename = `historial-${user.email}-${new Date().toISOString().split('T')[0]}.pdf`;
+      const filename = `historial-${user.email}-${TemporalUtils.formatDate(TemporalUtils.today())}.pdf`;
       
       // Configurar headers para descarga
       res.set({
