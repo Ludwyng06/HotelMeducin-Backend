@@ -95,6 +95,106 @@ export class ReportsService {
     return result;
   }
 
+  async getReservationsToday() {
+    // Usar exactamente la misma lógica que Neo4j para garantizar consistencia
+    // Neo4j filtra con: res.checkInDate STARTS WITH $todayDateOnly
+    // donde todayDateOnly se obtiene así:
+    //   const today = new Date();
+    //   today.setHours(0, 0, 0, 0);
+    //   const todayDateOnly = today.toISOString().split('T')[0]; // "2025-12-14"
+    // Esto significa que busca cualquier fecha que empiece con "2025-12-14"
+    // En Neo4j, las fechas se guardan como strings ISO completos (ej: "2025-12-14T00:00:00.000Z")
+    
+    // Usar EXACTAMENTE la misma lógica que Neo4j
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const todayDateOnly = today.toISOString().split('T')[0]; // YYYY-MM-DD
+    
+    // Crear rango para el día completo (igual que Neo4j calcula)
+    const tomorrow = new Date(today);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    const todayStart = today.toISOString(); // 2025-12-14T00:00:00.000Z
+    const tomorrowStart = tomorrow.toISOString(); // 2025-12-15T00:00:00.000Z
+
+    console.log(`📅 [getReservationsToday] Filtrando reservaciones del día: ${todayDateOnly}`);
+    console.log(`📅 [getReservationsToday] Rango: ${todayStart} a ${tomorrowStart}`);
+    console.log(`📅 [getReservationsToday] Fecha legible: ${today.toLocaleDateString('es-CO')}`);
+
+    // Usar agregación con $dateToString para comparar solo la parte de fecha (YYYY-MM-DD)
+    // IMPORTANTE: Usar timezone: 'UTC' porque Neo4j guarda las fechas como strings ISO en UTC
+    // (ver línea 523 de neo4j.service.ts: new Date(reservation.checkInDate).toISOString())
+    // Esto garantiza que ambos sistemas usen la misma zona horaria para comparar fechas
+    const allReservations = await this.reservationModel.aggregate([
+      {
+        $match: {
+          $expr: {
+            $eq: [
+              { $dateToString: { format: '%Y-%m-%d', date: '$checkInDate', timezone: 'UTC' } },
+              todayDateOnly
+            ]
+          }
+        }
+      },
+      {
+        $project: {
+          status: 1,
+          totalPrice: 1,
+          checkInDate: 1,
+          _id: 1
+        }
+      }
+    ]);
+
+    console.log(`📊 [getReservationsToday] Reservaciones encontradas: ${allReservations.length}`);
+    
+    if (allReservations.length > 0) {
+      console.log(`📊 [getReservationsToday] Primeras reservaciones:`, allReservations.slice(0, 5).map(r => ({
+        id: r._id?.toString() || 'N/A',
+        checkInDate: r.checkInDate instanceof Date ? r.checkInDate.toISOString() : r.checkInDate,
+        status: r.status,
+        totalPrice: r.totalPrice
+      })));
+    } else {
+      // Si no encuentra reservaciones, buscar algunas para debug
+      const sampleReservations = await this.reservationModel.find({})
+        .select('checkInDate status totalPrice')
+        .sort({ checkInDate: -1 })
+        .limit(5)
+        .lean();
+      console.log(`📊 [getReservationsToday] DEBUG: Últimas 5 reservaciones en BD:`, sampleReservations.map(r => ({
+        checkInDate: r.checkInDate instanceof Date ? r.checkInDate.toISOString() : r.checkInDate,
+        status: r.status
+      })));
+    }
+
+    // Calcular métricas manualmente
+    const total = allReservations.length;
+    
+    // Calcular ingresos solo de reservaciones confirmadas y completadas
+    // Las pendientes son inciertas (pueden cancelarse) y las canceladas no generan ingresos
+    // Solo las confirmadas y completadas representan ingresos reales garantizados
+    const totalRevenue = allReservations
+      .filter(r => r.status === 'confirmed' || r.status === 'completed')
+      .reduce((sum, r) => sum + (r.totalPrice || 0), 0);
+    
+    const byStatus = {
+      pending: allReservations.filter(r => r.status === 'pending').length,
+      confirmed: allReservations.filter(r => r.status === 'confirmed').length,
+      cancelled: allReservations.filter(r => r.status === 'cancelled').length,
+      completed: allReservations.filter(r => r.status === 'completed').length,
+    };
+
+    console.log(`📊 [getReservationsToday] Total: ${total}, Por status:`, byStatus);
+    console.log(`📊 [getReservationsToday] Ingresos totales: $${totalRevenue}`);
+
+    return {
+      total,
+      totalRevenue,
+      byStatus,
+      date: todayDateOnly // Usar el mismo formato que Neo4j
+    };
+  }
+
   async getReservationsMonthly(startDate: Date, endDate: Date) {
     return this.reservationModel.aggregate([
       {

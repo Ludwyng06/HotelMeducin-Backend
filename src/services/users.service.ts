@@ -1,6 +1,6 @@
 import { Injectable, ConflictException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
-import { Model } from 'mongoose';
+import { Model, Types } from 'mongoose';
 import { User, UserDocument } from '@models/users/user.schema';
 import { UserRole, UserRoleDocument } from '@models/users/user-role.schema';
 import { CreateUserDto } from '@models/users/dto/create-user.dto';
@@ -24,7 +24,10 @@ export class UsersService {
       }
     }
 
-    const hashedPassword = await bcrypt.hash(createUserDto.password, 10);
+    // Solo hashear password si se proporciona (no requerido para OAuth)
+    const hashedPassword = createUserDto.password 
+      ? await bcrypt.hash(createUserDto.password, 10)
+      : undefined;
 
     // Asegurar roleId por defecto: 'user'
     let resolvedRoleId = createUserDto.roleId as any;
@@ -46,11 +49,17 @@ export class UsersService {
     }
 
     try {
-      const createdUser = new this.userModel({
+      const userData: any = {
         ...createUserDto,
         roleId: resolvedRoleId,
-        password: hashedPassword,
-      });
+      };
+      
+      // Solo agregar password si existe (para usuarios OAuth no es necesario)
+      if (hashedPassword) {
+        userData.password = hashedPassword;
+      }
+      
+      const createdUser = new this.userModel(userData);
 
       const saved = await createdUser.save();
       // Devolver con roleId poblado para consumo inmediato
@@ -82,8 +91,20 @@ export class UsersService {
     return this.userModel.findById(id).populate('roleId').exec();
   }
 
-  async findByEmail(email: string): Promise<User | null> {
-    return this.userModel.findOne({ email }).populate('roleId').exec();
+  async findByEmail(email: string, populateRole = true): Promise<User | null> {
+    const query = this.userModel.findOne({ email });
+    if (populateRole) {
+      query.populate('roleId');
+    }
+    return query.exec();
+  }
+
+  async findByGoogleId(googleId: string, populateRole = true): Promise<User | null> {
+    const query = this.userModel.findOne({ googleId });
+    if (populateRole) {
+      query.populate('roleId');
+    }
+    return query.exec();
   }
 
   async findByPhone(phoneNumber: string): Promise<User | null> {
@@ -100,6 +121,14 @@ export class UsersService {
     return this.userModel.findByIdAndUpdate(id, updateData, { new: true }).populate('roleId').exec();
   }
 
+  // Método optimizado que actualiza y retorna en una sola consulta (evita consulta adicional)
+  async updateAndReturn(id: string, updateData: Partial<User>): Promise<User | null> {
+    return this.userModel
+      .findByIdAndUpdate(id, updateData, { new: true })
+      .populate('roleId')
+      .exec();
+  }
+
   async remove(id: string): Promise<User | null> {
     return this.userModel.findByIdAndDelete(id).exec();
   }
@@ -109,6 +138,11 @@ export class UsersService {
     const role = await this.userRoleModel.findOne({ name: roleName, isActive: true });
     if (!role) return [];
     return this.userModel.find({ roleId: role._id }).populate('roleId').exec();
+  }
+
+  async findByRoleId(roleId: string): Promise<User[]> {
+    const objectId = new Types.ObjectId(roleId);
+    return this.userModel.find({ roleId: objectId }).populate('roleId').exec();
   }
 
   async getAdmins(): Promise<User[]> {

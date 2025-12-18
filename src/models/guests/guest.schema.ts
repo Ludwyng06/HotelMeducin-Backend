@@ -47,3 +47,11 @@ export const GuestSchema = SchemaFactory.createForClass(Guest);
 GuestSchema.index({ documentNumber: 1, documentType: 1 }, { unique: true });
 GuestSchema.index({ phoneNumber: 1 }, { unique: true, sparse: true }); // sparse: permite null/undefined
 GuestSchema.index({ email: 1 }, { unique: true, sparse: true }); // sparse: permite null/undefined
+
+// Índices para consultas frecuentes
+GuestSchema.index({ reservationId: 1 }); // Huéspedes por reserva
+GuestSchema.index({ reservationId: 1, isMainGuest: 1 }); // Huésped principal por reserva
+GuestSchema.index({ documentNumber: 1 }); // Búsquedas por documento
+GuestSchema.index({ email: 1 }); // Búsquedas por email
+GuestSchema.index({ phoneNumber: 1 }); // Búsquedas por teléfono
+GuestSchema.index({ isCompleted: 1 }); // Filtros de completitud

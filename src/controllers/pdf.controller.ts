@@ -1,9 +1,12 @@
-import { Controller, Get, Post, Body, Param, Res } from '@nestjs/common';
+import { Controller, Get, Post, Body, Param, Res, UseGuards, Request } from '@nestjs/common';
 import type { Response } from 'express';
 import { PdfService } from '@services/pdf.service';
 import { EmailService } from '@services/email.service';
 import { ReservationsService } from '@services/reservations.service';
 import { GuestsService } from '@services/guests.service';
+import { Neo4jService } from '@services/neo4j.service';
+import { UsersService } from '@services/users.service';
+import { JwtAuthGuard } from '@common/guards/jwt-auth.guard';
 
 @Controller('pdf')
 export class PdfController {
@@ -12,6 +15,8 @@ export class PdfController {
     private readonly emailService: EmailService,
     private readonly reservationsService: ReservationsService,
     private readonly guestsService: GuestsService,
+    private readonly neo4jService: Neo4jService,
+    private readonly usersService: UsersService,
   ) {}
 
   @Get('reservation/:id')
@@ -113,6 +118,115 @@ export class PdfController {
         message: 'Error probando conexión de email',
         error: (error as Error)?.message || String(error)
       };
+    }
+  }
+
+  // 📋 Generar PDF del historial completo del usuario
+  @Get('user-history')
+  @UseGuards(JwtAuthGuard)
+  async generateUserHistoryPDF(@Request() req: any, @Res() res: Response) {
+    try {
+      // El JWT strategy devuelve el usuario en req.user con _id
+      const userId = req.user?._id?.toString() || req.user?.sub || req.user?.id;
+      
+      console.log('🔍 Usuario extraído del token:', {
+        user: req.user,
+        userId: userId,
+        _id: req.user?._id,
+        sub: req.user?.sub,
+        id: req.user?.id
+      });
+      
+      if (!userId) {
+        console.error('❌ No se pudo extraer userId del token JWT');
+        return res.status(401).json({
+          success: false,
+          message: 'Usuario no autenticado. Por favor, inicia sesión nuevamente.'
+        });
+      }
+
+      // Obtener datos del usuario desde MongoDB
+      const user = await this.usersService.findOne(userId);
+      if (!user) {
+        return res.status(404).json({
+          success: false,
+          message: 'Usuario no encontrado'
+        });
+      }
+
+      // Obtener análisis de red del usuario desde Neo4j
+      let userNetworkData;
+      try {
+        userNetworkData = await this.neo4jService.getUserNetworkAnalysis(userId);
+      } catch (error) {
+        console.warn('Neo4j no disponible, usando datos básicos:', error);
+        // Si Neo4j no está disponible, usar datos básicos
+        const reservations = await this.reservationsService.findByUser(userId);
+        // Convertir user a objeto plano
+        const userObj = (user as any).toObject ? (user as any).toObject() : JSON.parse(JSON.stringify(user));
+        userNetworkData = {
+          user: {
+            id: userObj._id?.toString() || userId,
+            email: userObj.email,
+            firstName: userObj.firstName,
+            lastName: userObj.lastName,
+            role: userObj.role
+          },
+          reservations: reservations.map((r: any) => {
+            const rObj = (r as any).toObject ? (r as any).toObject() : JSON.parse(JSON.stringify(r));
+            return {
+              reservationId: rObj._id?.toString() || '',
+              checkInDate: rObj.checkInDate,
+              checkOutDate: rObj.checkOutDate,
+              totalPrice: rObj.totalPrice,
+              status: rObj.status,
+              roomName: rObj.roomId?.name || 'N/A',
+              roomId: rObj.roomId?._id?.toString() || 'N/A'
+            };
+          }),
+          favoriteRooms: [],
+          similarUsers: [],
+          stats: {
+            totalReservations: reservations.length,
+            totalGastado: reservations.reduce((sum: number, r: any) => {
+              const rObj = (r as any).toObject ? (r as any).toObject() : JSON.parse(JSON.stringify(r));
+              return sum + (rObj.totalPrice || 0);
+            }, 0),
+            promedioReservacion: reservations.length > 0 
+              ? reservations.reduce((sum: number, r: any) => {
+                  const rObj = (r as any).toObject ? (r as any).toObject() : JSON.parse(JSON.stringify(r));
+                  return sum + (rObj.totalPrice || 0);
+                }, 0) / reservations.length 
+              : 0,
+            habitacionesDiferentes: new Set(reservations.map((r: any) => {
+              const rObj = (r as any).toObject ? (r as any).toObject() : JSON.parse(JSON.stringify(r));
+              return rObj.roomId?._id?.toString();
+            })).size
+          }
+        };
+      }
+
+      // Generar PDF
+      const pdfBuffer = await this.pdfService.generateUserHistoryPDF(user, userNetworkData);
+      
+      // Generar nombre de archivo
+      const filename = `historial-${user.email}-${new Date().toISOString().split('T')[0]}.pdf`;
+      
+      // Configurar headers para descarga
+      res.set({
+        'Content-Type': 'application/pdf',
+        'Content-Disposition': `attachment; filename="${filename}"`,
+        'Content-Length': pdfBuffer.length,
+      });
+      
+      res.send(pdfBuffer);
+    } catch (error) {
+      console.error('Error generando PDF de historial del usuario:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Error al generar el PDF del historial',
+        error: error instanceof Error ? error.message : String(error)
+      });
     }
   }
 }

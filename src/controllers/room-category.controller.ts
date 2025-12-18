@@ -1,22 +1,31 @@
-import { Controller, Get, Param, Query, UseGuards } from '@nestjs/common';
+import { Controller, Get, Param, Query, UseGuards, Logger } from '@nestjs/common';
 import { RoomCategoryService } from '../services/room-category.service';
 import { JwtAuthGuard } from '@common/guards/jwt-auth.guard';
 import { Public } from '@common/decorators/public.decorator';
 
 @Controller('room-categories')
 export class RoomCategoryController {
+  private readonly logger = new Logger(RoomCategoryController.name);
+  
   constructor(private readonly roomCategoryService: RoomCategoryService) {}
 
   // Obtener todas las categorías activas
   @Public()
   @Get()
   async findAll() {
-    const categories = await this.roomCategoryService.findAll();
-    return {
-      success: true,
-      data: categories,
-      message: 'Categorías obtenidas exitosamente'
-    };
+    this.logger.log('📥 Petición recibida: GET /room-categories');
+    try {
+      const categories = await this.roomCategoryService.findAll();
+      this.logger.log(`✅ Categorías encontradas: ${Array.isArray(categories) ? categories.length : 'N/A'}`);
+      return {
+        success: true,
+        data: categories,
+        message: 'Categorías obtenidas exitosamente'
+      };
+    } catch (error) {
+      this.logger.error('❌ Error al obtener categorías:', error);
+      throw error;
+    }
   }
 
   // Obtener categoría por ID

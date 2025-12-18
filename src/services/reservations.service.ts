@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, ForbiddenException, BadRequestException } from '@nestjs/common';
+import { Injectable, NotFoundException, ForbiddenException, BadRequestException, Inject, forwardRef, Optional } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { Reservation, ReservationDocument } from '@models/reservations/reservation.schema';
@@ -8,6 +8,8 @@ import { PdfService } from '@services/pdf.service';
 import { EmailService } from '@services/email.service';
 import { GuestsService } from '@services/guests.service';
 import { CreateGuestDto } from '@models/guests/dto/guest.dto';
+import { Neo4jService } from '@services/neo4j.service';
+import { NotificationsService } from '@modules/notifications/notifications.service';
 
 @Injectable()
 export class ReservationsService {
@@ -17,13 +19,17 @@ export class ReservationsService {
     private redisService: RedisService,
     private pdfService: PdfService,
     private emailService: EmailService,
-    private guestsService: GuestsService
+    private guestsService: GuestsService,
+    @Inject(forwardRef(() => NotificationsService))
+    private notificationsService: NotificationsService,
+    @Inject(forwardRef(() => Neo4jService))
+    private neo4jService: Neo4jService
   ) {}
 
   async create(createReservationDto: CreateReservationDto): Promise<Reservation> {
     // 🔍 VALIDAR DUPLICADOS DE DOCUMENTOS
     if (createReservationDto.guests && createReservationDto.guests.length > 0) {
-      await this.validateDocumentDuplicates(createReservationDto.guests);
+      await this.validateDocumentDuplicates(createReservationDto.guests, createReservationDto.userId);
     }
 
     // Normalizar y completar campos requeridos por el esquema
@@ -98,6 +104,119 @@ export class ReservationsService {
     console.log('📊 Métricas actualizadas para nueva reserva');
     console.log('💰 Ingreso registrado: $' + createReservationDto.totalPrice);
     
+    // 🕸️ SINCRONIZACIÓN AUTOMÁTICA CON NEO4J EN TIEMPO REAL (ASÍNCRONO - NO BLOQUEA LA RESPUESTA)
+    // Ejecutar inmediatamente pero sin bloquear
+    (async () => {
+      try {
+        console.log('🕸️ [SYNC] ========== INICIANDO SINCRONIZACIÓN AUTOMÁTICA ==========');
+        console.log('🕸️ [SYNC] Verificando Neo4j para sincronización automática...');
+        console.log('🕸️ [SYNC] neo4jService disponible:', !!this.neo4jService);
+        console.log('🕸️ [SYNC] Tipo de neo4jService:', typeof this.neo4jService);
+        
+        if (!this.neo4jService) {
+          console.error('❌ [SYNC] Neo4jService no está disponible - NO SE SINCRONIZARÁ');
+          return;
+        }
+        
+        const isConnected = this.neo4jService.isConnected ? this.neo4jService.isConnected() : false;
+        console.log('🕸️ [SYNC] Neo4j conectado:', isConnected);
+        
+        if (!isConnected) {
+          console.warn('⚠️ [SYNC] Neo4j no está conectado, omitiendo sincronización');
+          return;
+        }
+        
+        console.log('🕸️ [SYNC] Iniciando sincronización automática con Neo4j...');
+        console.log('🕸️ [SYNC] Reservación ID:', savedReservation._id.toString());
+        
+        // Obtener la reservación con todos los datos poblados
+        const reservationForSync = await this.reservationModel
+          .findById(savedReservation._id)
+          .populate('userId')
+          .populate('roomId')
+          .lean()
+          .exec();
+        
+        if (!reservationForSync) {
+          console.warn('⚠️ [SYNC] No se pudo obtener la reservación para sincronizar');
+          return;
+        }
+        
+        console.log('🕸️ [SYNC] Reservación obtenida:', {
+          id: reservationForSync._id,
+          hasUserId: !!reservationForSync.userId,
+          hasRoomId: !!reservationForSync.roomId
+        });
+        
+        // Asegurar que el usuario esté sincronizado primero
+        if (reservationForSync.userId) {
+          const user = reservationForSync.userId as any;
+          const userId = user._id?.toString() || user.id?.toString() || createReservationDto.userId?.toString();
+          const userObj = {
+            _id: userId,
+            email: user.email,
+            firstName: user.firstName,
+            lastName: user.lastName,
+            role: user.role || 'user',
+            roleId: user.roleId
+          };
+          console.log('🕸️ [SYNC] Sincronizando usuario:', userObj._id);
+          await this.neo4jService.syncUsersFromMongo([userObj]);
+          console.log('✅ [SYNC] Usuario sincronizado en Neo4j:', userObj._id);
+        }
+        
+        // Asegurar que la habitación esté sincronizada
+        if (reservationForSync.roomId) {
+          const room = reservationForSync.roomId as any;
+          const roomId = room._id?.toString() || room.id?.toString() || createReservationDto.roomId?.toString();
+          const roomObj = {
+            _id: roomId,
+            name: room.name,
+            roomNumber: room.roomNumber,
+            categoryId: room.categoryId,
+            floor: room.floor,
+            price: room.price || 0, // Agregar price
+            capacity: room.capacity || 1, // Agregar capacity
+            isAvailable: room.isAvailable,
+            isMaintenance: room.isMaintenance
+          };
+          console.log('🕸️ [SYNC] Sincronizando habitación:', roomObj._id);
+          await this.neo4jService.syncRoomsFromMongo([roomObj]);
+          console.log('✅ [SYNC] Habitación sincronizada en Neo4j:', roomObj._id);
+        }
+        
+        // Normalizar la reservación para la sincronización
+        const userId = reservationForSync.userId?._id?.toString() || 
+                      reservationForSync.userId?.id?.toString() || 
+                      createReservationDto.userId?.toString();
+        const roomId = reservationForSync.roomId?._id?.toString() || 
+                      reservationForSync.roomId?.id?.toString() || 
+                      createReservationDto.roomId?.toString();
+        
+        const normalizedReservation = {
+          ...reservationForSync,
+          userId: userId,
+          roomId: roomId
+        };
+        
+        console.log('🕸️ [SYNC] Sincronizando reservación:', {
+          reservationId: normalizedReservation._id?.toString(),
+          userId: userId,
+          roomId: roomId
+        });
+        
+        // Sincronizar la reservación con las relaciones
+        await this.neo4jService.syncReservationsFromMongo([normalizedReservation]);
+        console.log('🕸️ ✅ [SYNC] Reservación sincronizada automáticamente con Neo4j:', savedReservation._id.toString());
+      } catch (error) {
+        console.error('⚠️ [SYNC] Error sincronizando reservación con Neo4j (no crítico):', error);
+        console.error('⚠️ [SYNC] Stack:', error instanceof Error ? error.stack : 'N/A');
+        // No interrumpir el flujo principal si Neo4j falla
+      }
+    })().catch(err => {
+      console.error('⚠️ [SYNC] Error no capturado en sincronización:', err);
+    });
+    
     // 📧 ENVÍO DE EMAIL CON PDF (ASÍNCRONO - NO BLOQUEA LA RESPUESTA)
     // Ejecutar en background sin bloquear la creación de la reserva
     setImmediate(async () => {
@@ -134,8 +253,27 @@ export class ReservationsService {
         // El error no afecta la creación de la reserva ya que se ejecuta en background
       }
     });
+
+    // 🔔 NOTIFICACIÓN EN TIEMPO REAL (ASÍNCRONO)
+    setImmediate(async () => {
+      try {
+        const reservationWithDetails = await this.reservationModel
+          .findById(savedReservation._id)
+          .populate('userId')
+          .populate('roomId')
+          .exec();
+
+        if (reservationWithDetails) {
+          // Notificar a administradores sobre nueva reservación
+          await this.notificationsService.notifyNewReservation(reservationWithDetails);
+          console.log('🔔 Notificación de nueva reservación enviada a administradores');
+        }
+      } catch (error) {
+        console.error('❌ Error enviando notificación (no bloquea la reserva):', error);
+      }
+    });
     
-    // Retornar inmediatamente sin esperar el envío de email
+    // Retornar inmediatamente sin esperar el envío de email o notificaciones
     return savedReservation;
   }
 
@@ -209,11 +347,26 @@ export class ReservationsService {
       throw new BadRequestException('No se puede cancelar una reserva completada');
     }
 
-    // Actualizar el status a 'cancelled'
+    // Validar que no falten menos de 24 horas para el check-in
+    const checkInDate = new Date(reservation.checkInDate);
+    const now = new Date();
+    const hoursUntilCheckIn = (checkInDate.getTime() - now.getTime()) / (1000 * 60 * 60);
+
+    if (hoursUntilCheckIn < 24) {
+      throw new BadRequestException(
+        'No se puede cancelar una reserva con menos de 24 horas de anticipación al check-in'
+      );
+    }
+
+    // Actualizar el status a 'cancelled' con información adicional
     const cancelledReservation = await this.reservationModel
       .findByIdAndUpdate(
         id,
-        { status: 'cancelled' },
+        { 
+          status: 'cancelled',
+          cancelledAt: new Date(),
+          cancellationReason: 'Cancelada por el cliente'
+        },
         { new: true }
       )
       .populate('userId')
@@ -291,7 +444,7 @@ export class ReservationsService {
   }
 
   // 🔍 VALIDAR DUPLICADOS DE DOCUMENTOS, TELÉFONOS Y EMAILS
-  private async validateDocumentDuplicates(guests: any[]): Promise<void> {
+  private async validateDocumentDuplicates(guests: any[], userId: string): Promise<void> {
     console.log('🔍 Validando duplicados de documentos, teléfonos y emails...');
     
     // Verificar duplicados dentro del mismo grupo de huéspedes
@@ -320,28 +473,170 @@ export class ReservationsService {
 
     // Verificar duplicados en la base de datos
     for (const guest of guests) {
-      if (guest.documentNumber) {
-        const exists = await this.guestsService.checkDocumentExists(guest.documentNumber);
-        if (exists) {
-          throw new Error(`El documento ${guest.documentNumber} ya está registrado en el sistema`);
+      if (guest.documentNumber && guest.documentType) {
+        const existingGuest = await this.guestsService.findByDocument(guest.documentNumber, guest.documentType);
+        if (existingGuest) {
+          // Verificar si el guest pertenece a una reserva del mismo usuario
+          const reservation = await this.reservationModel.findById(existingGuest.reservationId).exec();
+          if (reservation && reservation.userId.toString() !== userId) {
+            throw new Error(`El documento ${guest.documentNumber} ya está registrado en el sistema`);
+          }
+          // Si pertenece al mismo usuario, permitir continuar
         }
       }
 
       if (guest.phoneNumber) {
-        const phoneExists = await this.guestsService.checkPhoneExists(guest.phoneNumber);
-        if (phoneExists) {
-          throw new Error(`El teléfono ${guest.phoneNumber} ya está registrado en el sistema`);
+        const existingGuest = await this.guestsService.findByPhone(guest.phoneNumber);
+        if (existingGuest) {
+          // Verificar si el guest pertenece a una reserva del mismo usuario
+          const reservation = await this.reservationModel.findById(existingGuest.reservationId).exec();
+          if (reservation && reservation.userId.toString() !== userId) {
+            throw new Error(`El teléfono ${guest.phoneNumber} ya está registrado en el sistema`);
+          }
+          // Si pertenece al mismo usuario, permitir continuar
         }
       }
 
       if (guest.email) {
-        const emailExists = await this.guestsService.checkEmailExists(guest.email);
-        if (emailExists) {
-          throw new Error(`El email ${guest.email} ya está registrado en el sistema`);
+        const existingGuest = await this.guestsService.findByEmail(guest.email);
+        if (existingGuest) {
+          // Verificar si el guest pertenece a una reserva del mismo usuario
+          const reservation = await this.reservationModel.findById(existingGuest.reservationId).exec();
+          if (reservation && reservation.userId.toString() !== userId) {
+            throw new Error(`El email ${guest.email} ya está registrado en el sistema`);
+          }
+          // Si pertenece al mismo usuario, permitir continuar
         }
       }
     }
     
     console.log('✅ Validación de duplicados completada');
+  }
+
+  /**
+   * Confirmar una reserva (solo recepcionista)
+   */
+  async confirmReservation(
+    reservationId: string,
+    confirmedBy: string,
+    paymentInfo?: { method?: string; notes?: string }
+  ): Promise<Reservation> {
+    const reservation = await this.reservationModel.findById(reservationId);
+    
+    if (!reservation) {
+      throw new NotFoundException('Reserva no encontrada');
+    }
+    
+    if (reservation.status !== 'pending') {
+      throw new BadRequestException('Solo se pueden confirmar reservas pendientes');
+    }
+    
+    // Verificar que no haya pasado más de 1 hora si es reserva del mismo día
+    const checkInDate = new Date(reservation.checkInDate);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    
+    if (checkInDate.getTime() === today.getTime()) {
+      // Reserva del mismo día - verificar que no haya pasado 1 hora
+      const reservationTime = new Date((reservation as any).createdAt || reservation.checkInDate);
+      const oneHourLater = new Date(reservationTime.getTime() + 60 * 60 * 1000);
+      
+      if (new Date() > oneHourLater) {
+        throw new BadRequestException(
+          'Han pasado más de 1 hora desde la creación. La reserva debe ser cancelada.'
+        );
+      }
+    }
+    
+    // Validar método de pago
+    if (paymentInfo?.method && !['efectivo', 'transferencia'].includes(paymentInfo.method)) {
+      throw new BadRequestException('Método de pago inválido. Solo se permiten: efectivo o transferencia');
+    }
+    
+    // Actualizar la reserva
+    reservation.status = 'confirmed';
+    reservation.confirmedBy = new Types.ObjectId(confirmedBy);
+    reservation.confirmedAt = new Date();
+    // Siempre asignar un método de pago (efectivo por defecto si no se proporciona)
+    reservation.paymentMethod = paymentInfo?.method || 'efectivo';
+    if (paymentInfo?.notes) {
+      reservation.paymentNotes = paymentInfo.notes;
+    }
+    
+    const savedReservation = await reservation.save();
+    
+    // Invalidar cache de la habitación
+    if (savedReservation.roomId) {
+      const roomId = (savedReservation.roomId as any)._id?.toString() || savedReservation.roomId.toString();
+      await this.redisService.invalidateRoomCache(roomId);
+      await this.redisService.invalidateAvailableRoomsCache();
+    }
+    
+    console.log(`✅ Reserva ${reservationId} confirmada por recepcionista ${confirmedBy}`);
+    return savedReservation;
+  }
+
+  /**
+   * Encontrar reservas pendientes
+   */
+  async findPendingReservations(startDate?: Date): Promise<Reservation[]> {
+    const query: any = { status: 'pending' };
+    
+    if (startDate) {
+      query.checkInDate = { $gte: startDate };
+    }
+    
+    return await this.reservationModel
+      .find(query)
+      .populate('userId', 'firstName lastName email phoneNumber')
+      .populate('roomId', 'name roomNumber categoryId')
+      .sort({ checkInDate: 1, createdAt: 1 })
+      .exec();
+  }
+
+  /**
+   * Verificar reservas del mismo día que expiraron (1 hora)
+   */
+  async expireSameDayReservations(): Promise<void> {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const tomorrow = new Date(today);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    
+    // Encontrar reservas pendientes del mismo día
+    const sameDayReservations = await this.reservationModel.find({
+      status: 'pending',
+      checkInDate: { $gte: today, $lt: tomorrow }
+    });
+    
+    const now = new Date();
+    let expiredCount = 0;
+    
+    for (const reservation of sameDayReservations) {
+      const reservationTime = new Date((reservation as any).createdAt || reservation.checkInDate);
+      const oneHourLater = new Date(reservationTime.getTime() + 60 * 60 * 1000);
+      
+      if (now > oneHourLater) {
+        // Cancelar automáticamente
+        reservation.status = 'cancelled';
+        reservation.cancelledAt = now;
+        reservation.cancellationReason = 'Expirada: No confirmada dentro de 1 hora';
+        await reservation.save();
+        
+        expiredCount++;
+        console.log(`⚠️ Reserva ${reservation._id} cancelada automáticamente por expiración`);
+        
+        // Invalidar cache de la habitación
+        if (reservation.roomId) {
+          const roomId = (reservation.roomId as any)._id?.toString() || reservation.roomId.toString();
+          await this.redisService.invalidateRoomCache(roomId);
+          await this.redisService.invalidateAvailableRoomsCache();
+        }
+      }
+    }
+    
+    if (expiredCount > 0) {
+      console.log(`⚠️ Total de reservas expiradas: ${expiredCount}`);
+    }
   }
 }

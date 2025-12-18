@@ -7,7 +7,7 @@ export type RoomDocument = Room & Document;
 export class Room {
   _id: Types.ObjectId;
 
-  @Prop({ required: true, unique: true })
+  @Prop({ required: true })
   roomNumber: string;
 
   @Prop({ required: true, type: Types.ObjectId, ref: 'RoomCategory' })
@@ -48,3 +48,19 @@ export class Room {
 }
 
 export const RoomSchema = SchemaFactory.createForClass(Room);
+
+// Índices para consultas frecuentes
+RoomSchema.index({ roomNumber: 1 }, { unique: true }); // roomNumber ya es unique, pero asegurar índice
+RoomSchema.index({ categoryId: 1, isAvailable: 1 }); // Habitaciones por categoría y disponibilidad
+RoomSchema.index({ floor: 1 }); // Búsquedas por piso
+RoomSchema.index({ isAvailable: 1, isMaintenance: 1 }); // Filtros de disponibilidad y mantenimiento
+RoomSchema.index({ capacity: 1 }); // Búsquedas por capacidad
+RoomSchema.index({ price: 1 }); // Ordenamiento por precio
+
+// Índice compuesto para búsquedas avanzadas
+RoomSchema.index({ 
+  categoryId: 1, 
+  isAvailable: 1, 
+  capacity: 1, 
+  floor: 1 
+}); // Búsquedas complejas de habitaciones disponibles

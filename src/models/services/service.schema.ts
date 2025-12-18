@@ -27,3 +27,9 @@ export class Service {
 }
 
 export const ServiceSchema = SchemaFactory.createForClass(Service);
+
+// Índices para consultas frecuentes
+ServiceSchema.index({ category: 1, isAvailable: 1 }); // Servicios por categoría y disponibilidad
+ServiceSchema.index({ isAvailable: 1 }); // Filtros de disponibilidad
+ServiceSchema.index({ price: 1 }); // Ordenamiento por precio
+ServiceSchema.index({ name: 1 }); // Búsquedas por nombre

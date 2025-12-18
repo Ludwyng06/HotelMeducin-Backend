@@ -1,8 +1,9 @@
 import { Injectable } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
-import { Model } from 'mongoose';
+import { Model, Types } from 'mongoose';
 import { Room, RoomDocument } from '@models/rooms/room.schema';
 import { RoomCategory, RoomCategoryDocument } from '@models/rooms/room-category.schema';
+import { Reservation, ReservationDocument } from '@models/reservations/reservation.schema';
 import { CreateRoomDto } from '@models/rooms/dto/create-room.dto';
 import { RedisService } from '@config/redis.service';
 
@@ -11,6 +12,7 @@ export class RoomsService {
   constructor(
     @InjectModel(Room.name) private roomModel: Model<RoomDocument>,
     @InjectModel(RoomCategory.name) private roomCategoryModel: Model<RoomCategoryDocument>,
+    @InjectModel(Reservation.name) private reservationModel: Model<ReservationDocument>,
     private redisService: RedisService
   ) {}
 
@@ -25,15 +27,20 @@ export class RoomsService {
 
   async findAvailable(): Promise<Room[]> {
     try {
-      // Consultar directamente la base de datos (sin Redis temporalmente)
+      // Consultar directamente la base de datos
       console.log('🗄️ Consultando base de datos para habitaciones disponibles...');
       const rooms = await this.roomModel.find({ 
-        isAvailable: true, 
         isMaintenance: false 
       }).populate('categoryId').exec();
       
-      console.log(`✅ ${rooms.length} habitaciones disponibles encontradas`);
-      return rooms;
+      // Calcular disponibilidad real basándose en reservas activas
+      const roomsWithRealAvailability = await this.calculateRealAvailability(rooms);
+      
+      // Filtrar solo las que están realmente disponibles
+      const availableRooms = roomsWithRealAvailability.filter(room => room.isAvailable);
+      
+      console.log(`✅ ${availableRooms.length} habitaciones disponibles encontradas`);
+      return availableRooms;
     } catch (error) {
       console.error('❌ Error en findAvailable:', error);
       throw error;
@@ -75,20 +82,112 @@ export class RoomsService {
       );
       if (categoryRooms.length > 0) {
         console.log('🏨 Habitaciones de categoría obtenidas del cache Redis:', categoryId);
-        return categoryRooms;
+        // Calcular disponibilidad real basándose en reservas activas
+        return await this.calculateRealAvailability(categoryRooms);
       }
     }
     
     // 2. Si no hay cache, consultar la base de datos
     console.log('🗄️ Consultando base de datos para categoría:', categoryId);
-    const objectId = new (require('mongoose').Types.ObjectId)(categoryId);
+    const objectId = new Types.ObjectId(categoryId);
     const rooms = await this.roomModel.find({ categoryId: objectId }).populate('categoryId').exec();
     
+    // Calcular disponibilidad real basándose en reservas activas
+    const roomsWithRealAvailability = await this.calculateRealAvailability(rooms);
+    
     // 3. Guardar en cache de Redis (5 minutos)
-    await this.redisService.cacheAvailableRooms(rooms, 300);
+    await this.redisService.cacheAvailableRooms(roomsWithRealAvailability, 300);
     console.log('💾 Habitaciones de categoría guardadas en cache Redis:', categoryId);
     
-    return rooms;
+    return roomsWithRealAvailability;
+  }
+
+  /**
+   * Calcula la disponibilidad real de las habitaciones basándose en reservas activas (que incluyen HOY)
+   * No modifica la base de datos, solo calcula el valor dinámicamente
+   */
+  private async calculateRealAvailability(rooms: Room[]): Promise<Room[]> {
+    if (!rooms || rooms.length === 0) {
+      return rooms;
+    }
+    
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    
+    // Obtener todas las reservas activas (confirmadas o pendientes) que incluyen HOY
+    const activeReservations = await this.reservationModel.find({
+      status: { $in: ['confirmed', 'pending'] },
+      checkInDate: { $lte: today },
+      checkOutDate: { $gt: today }
+    }).select('roomId').lean().exec();
+    
+    // Crear un Set de IDs de habitaciones ocupadas HOY
+    const occupiedRoomIds = new Set<string>(
+      activeReservations
+        .map(res => {
+          const roomId = res.roomId as any;
+          if (roomId instanceof Types.ObjectId) {
+            return roomId.toString();
+          }
+          if (typeof roomId === 'string') {
+            return roomId;
+          }
+          if (roomId && typeof roomId.toString === 'function') {
+            return roomId.toString();
+          }
+          return '';
+        })
+        .filter((id): id is string => id !== '')
+    );
+    
+    // Calcular disponibilidad real para cada habitación
+    const roomsWithAvailability = rooms.map(room => {
+      let roomId: string = '';
+      if (room._id instanceof Types.ObjectId) {
+        roomId = room._id.toString();
+      } else if (typeof room._id === 'string') {
+        roomId = room._id;
+      } else if (room._id && typeof (room._id as any).toString === 'function') {
+        roomId = (room._id as any).toString();
+      }
+      
+      const isOccupiedToday = occupiedRoomIds.has(roomId);
+      
+      // La habitación está disponible si:
+      // 1. NO está ocupada HOY
+      // 2. NO está en mantenimiento
+      const realAvailability = !isOccupiedToday && !room.isMaintenance;
+      
+      // Convertir a objeto plano si es un documento de Mongoose
+      const roomDoc = room as any;
+      let roomObj: any;
+      if (roomDoc && typeof roomDoc.toObject === 'function') {
+        roomObj = roomDoc.toObject();
+      } else {
+        roomObj = JSON.parse(JSON.stringify(room));
+      }
+      
+      // Asegurar que las amenidades se preserven correctamente
+      if (!roomObj.amenities || !Array.isArray(roomObj.amenities)) {
+        roomObj.amenities = room.amenities || [];
+      }
+      
+      // Asegurar que imageUrls se preserve correctamente
+      if (!roomObj.imageUrls || !Array.isArray(roomObj.imageUrls)) {
+        roomObj.imageUrls = room.imageUrls || [];
+      }
+      
+      // Actualizar solo el campo isAvailable
+      roomObj.isAvailable = realAvailability;
+      
+      return roomObj as Room;
+    });
+    
+    console.log(`🔄 Disponibilidad calculada para ${roomsWithAvailability.length} habitaciones`);
+    console.log(`   - Ocupadas hoy: ${occupiedRoomIds.size}`);
+    console.log(`   - Disponibles: ${roomsWithAvailability.filter(r => r.isAvailable).length}`);
+    
+    return roomsWithAvailability;
   }
 
   async findByFloor(floor: number): Promise<Room[]> {

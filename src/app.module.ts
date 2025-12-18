@@ -25,6 +25,10 @@ import { DocumentTypesModule } from './modules/document-types/document-types.mod
 import { GuestsModule } from './modules/guests/guests.module';
 import { ReservationDraftsModule } from './modules/reservation-drafts/reservation-drafts.module';
 import { PdfModule } from './modules/pdf/pdf.module';
+import { NotificationsModule } from './modules/notifications/notifications.module';
+import { Neo4jModule } from './modules/neo4j/neo4j.module';
+import { SchedulerModule } from './modules/scheduler/scheduler.module';
+import { DatabaseIndexesService } from './services/database-indexes.service';
 
 @Module({
   imports: [
@@ -32,7 +36,11 @@ import { PdfModule } from './modules/pdf/pdf.module';
       isGlobal: true,
       envFilePath: '.env',
     }),
-    MongooseModule.forRoot('mongodb://localhost:27017/hotel_meducin_db'),
+    MongooseModule.forRootAsync({
+      imports: [ConfigModule],
+      useFactory: getMongoConfig,
+      inject: [ConfigService],
+    }),
     JwtModule.register({
       secret: 'clave_super_segura_para_jwt_hotel_meducin_2024',
       signOptions: { expiresIn: '24h' },
@@ -58,11 +66,15 @@ import { PdfModule } from './modules/pdf/pdf.module';
     GuestsModule,
     ReservationDraftsModule,
     PdfModule,
+    NotificationsModule,
+    Neo4jModule,
+    SchedulerModule,
   ],
   controllers: [AppController],
   providers: [
     AppService,
     RedisService,
+    DatabaseIndexesService, // Servicio para inicializar índices de bases de datos
     // 🔐 Guard global - proteger todas las rutas por defecto
     {
       provide: APP_GUARD,

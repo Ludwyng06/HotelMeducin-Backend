@@ -17,7 +17,9 @@
     "test:watch": "jest --watch",
     "test:cov": "jest --coverage",
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
-    "test:e2e": "jest --config ./test/jest-e2e.json"
+    "test:e2e": "jest --config ./test/jest-e2e.json",
+    "test:neo4j": "node scripts/test-neo4j-connection.js",
+    "sync:neo4j": "node scripts/sync-neo4j-data.js"
   },
   "dependencies": {
     "@nestjs/cache-manager": "^3.0.1",
@@ -41,10 +43,17 @@
     "nodemailer": "^7.0.10",
     "passport": "^0.7.0",
     "passport-jwt": "^4.0.1",
+    "passport-google-oauth20": "^2.0.0",
     "pdfkit": "^0.17.2",
     "redis": "^5.9.0",
     "reflect-metadata": "^0.2.2",
-    "rxjs": "^7.8.1"
+    "rxjs": "^7.8.1",
+    "neo4j-driver": "^5.15.0",
+    "speakeasy": "^2.0.0",
+    "qrcode": "^1.5.3",
+    "@nestjs/websockets": "^11.0.1",
+    "@nestjs/platform-socket.io": "^11.0.1",
+    "socket.io": "^4.7.5"
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3.2.0",
@@ -56,6 +65,8 @@
     "@types/jest": "^30.0.0",
     "@types/node": "^22.10.7",
     "@types/supertest": "^6.0.2",
+    "@types/passport-google-oauth20": "^2.0.14",
+    "@types/qrcode": "^1.5.5",
     "eslint": "^9.18.0",
     "eslint-config-prettier": "^10.0.1",
     "eslint-plugin-prettier": "^5.2.2",

@@ -109,6 +109,125 @@ export class SuperadminController {
     };
   }
 
+  // CRUD de Recepcionistas
+  @Get('recepcionistas')
+  @Roles('admin', 'superadmin')
+  async getRecepcionistas() {
+    // Primero asegurarse de que los roles por defecto estén inicializados
+    await this.userRolesService.initializeDefaultRoles();
+    
+    // Buscar el rol sin filtrar por isActive
+    const recepcionistaRole = await this.userRolesService.findByNameIgnoreActive('recepcionista');
+    if (!recepcionistaRole) {
+      console.log('⚠️ Rol recepcionista no encontrado');
+      return {
+        success: true,
+        data: [],
+        message: 'Recepcionistas obtenidos exitosamente'
+      };
+    }
+    
+    console.log(`🔍 Buscando recepcionistas con roleId: ${recepcionistaRole._id}`);
+    const recepcionistas = await this.usersService.findByRoleId(recepcionistaRole._id.toString());
+    console.log(`📋 Recepcionistas encontrados: ${recepcionistas.length}`);
+    
+    return {
+      success: true,
+      data: recepcionistas,
+      message: 'Recepcionistas obtenidos exitosamente'
+    };
+  }
+
+  @Post('recepcionistas')
+  @Roles('admin', 'superadmin')
+  async createRecepcionista(@Body() createRecepcionistaDto: any) {
+    // Primero asegurarse de que los roles por defecto estén inicializados
+    await this.userRolesService.initializeDefaultRoles();
+    
+    // Buscar el rol de recepcionista (sin filtrar por isActive)
+    let recepcionistaRole = await this.userRolesService.findByNameIgnoreActive('recepcionista');
+    
+    // Si no existe o está inactivo, crearlo o reactivarlo
+    if (!recepcionistaRole) {
+      recepcionistaRole = await this.userRolesService.create({
+        name: 'recepcionista',
+        description: 'Recepcionista del hotel con acceso a confirmar reservas',
+        permissions: [
+          'read_reservations', 'update_reservations', 'confirm_reservations',
+          'read_users', 'read_rooms', 'read_guests',
+          'view_reception_dashboard'
+        ],
+        isActive: true
+      });
+      console.log('✅ Rol recepcionista creado automáticamente');
+    } else if (!recepcionistaRole.isActive) {
+      // Si existe pero está inactivo, reactivarlo
+      recepcionistaRole = await this.userRolesService.update(recepcionistaRole._id.toString(), { isActive: true });
+      console.log('✅ Rol recepcionista reactivado');
+    }
+
+    if (!recepcionistaRole) {
+      throw new Error('No se pudo obtener o crear el rol de recepcionista');
+    }
+
+    const recepcionistaData = {
+      ...createRecepcionistaDto,
+      roleId: recepcionistaRole._id
+    };
+
+    const recepcionista = await this.usersService.create(recepcionistaData);
+    return {
+      success: true,
+      data: recepcionista,
+      message: 'Recepcionista creado exitosamente'
+    };
+  }
+
+  @Get('recepcionistas/:id')
+  @Roles('admin', 'superadmin')
+  async getRecepcionista(@Param('id') id: string) {
+    const recepcionista = await this.usersService.findOne(id);
+    if (!recepcionista || (recepcionista.roleId as any)?.name !== 'recepcionista') {
+      throw new Error('Recepcionista no encontrado');
+    }
+    return {
+      success: true,
+      data: recepcionista,
+      message: 'Recepcionista obtenido exitosamente'
+    };
+  }
+
+  @Patch('recepcionistas/:id')
+  @Roles('admin', 'superadmin')
+  async updateRecepcionista(@Param('id') id: string, @Body() updateRecepcionistaDto: any) {
+    const recepcionista = await this.usersService.findOne(id);
+    if (!recepcionista || (recepcionista.roleId as any)?.name !== 'recepcionista') {
+      throw new Error('Recepcionista no encontrado');
+    }
+
+    const updatedRecepcionista = await this.usersService.update(id, updateRecepcionistaDto);
+    return {
+      success: true,
+      data: updatedRecepcionista,
+      message: 'Recepcionista actualizado exitosamente'
+    };
+  }
+
+  @Delete('recepcionistas/:id')
+  @Roles('admin', 'superadmin')
+  async deleteRecepcionista(@Param('id') id: string) {
+    const recepcionista = await this.usersService.findOne(id);
+    if (!recepcionista || (recepcionista.roleId as any)?.name !== 'recepcionista') {
+      throw new Error('Recepcionista no encontrado');
+    }
+
+    await this.usersService.remove(id);
+    return {
+      success: true,
+      message: 'Recepcionista eliminado exitosamente'
+    };
+  }
+
   // Gestión de Roles
   @Get('roles')
   async getRoles() {

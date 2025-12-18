@@ -60,5 +60,9 @@ export class ReservationDraft {
 
 export const ReservationDraftSchema = SchemaFactory.createForClass(ReservationDraft);
 
-// Índice TTL para auto-eliminar borradores expirados
+// Índice TTL para auto-eliminar borradores expirados (solo uno, no duplicar)
 ReservationDraftSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
+
+// Índices para consultas frecuentes
+ReservationDraftSchema.index({ userId: 1, createdAt: -1 }); // Borradores por usuario ordenados por fecha
+ReservationDraftSchema.index({ roomId: 1 }); // Borradores por habitación

@@ -7,10 +7,10 @@ export type RoomCategoryDocument = RoomCategory & Document;
 export class RoomCategory {
   _id: Types.ObjectId;
 
-  @Prop({ required: true, unique: true })
+  @Prop({ required: true })
   name: string;
 
-  @Prop({ required: true, unique: true })
+  @Prop({ required: true })
   code: string;
 
   @Prop({ required: true })
@@ -42,3 +42,9 @@ export class RoomCategory {
 }
 
 export const RoomCategorySchema = SchemaFactory.createForClass(RoomCategory);
+
+// Índices para consultas frecuentes
+RoomCategorySchema.index({ code: 1 }, { unique: true }); // code ya es unique, pero asegurar índice
+RoomCategorySchema.index({ name: 1 }, { unique: true }); // name ya es unique, pero asegurar índice
+RoomCategorySchema.index({ isActive: 1 }); // Filtros de categorías activas
+RoomCategorySchema.index({ basePrice: 1 }); // Ordenamiento por precio base

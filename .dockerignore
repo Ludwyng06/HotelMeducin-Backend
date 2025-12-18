@@ -1,0 +1,53 @@
+# Dependencias
+node_modules
+npm-debug.log
+package-lock.json
+
+# Build
+dist
+build
+*.tsbuildinfo
+
+# Testing
+coverage
+.nyc_output
+test
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Git
+.git
+.gitignore
+
+# Documentos
+documentos
+*.md
+!README.md
+
+# Scripts
+scripts
+
+# Certificados SSL (no incluir en imagen)
+certs
+*.pem
+*.key
+*.crt
+
+# Variables de entorno
+.env
+.env.local
+.env.*.local
+
+# Logs
+logs
+*.log
+

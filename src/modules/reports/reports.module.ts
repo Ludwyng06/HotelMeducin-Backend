@@ -1,6 +1,9 @@
 import { Module } from '@nestjs/common';
 import { MongooseModule } from '@nestjs/mongoose';
 import { ReportsService } from '@services/reports.service';
+import { ExcelService } from '@services/excel.service';
+import { PdfService } from '@services/pdf.service';
+import { Neo4jService } from '@services/neo4j.service';
 import { ReportsController } from '@controllers/reports.controller';
 import { User, UserSchema } from '@models/users/user.schema';
 import { Reservation, ReservationSchema } from '@models/reservations/reservation.schema';
@@ -17,7 +20,7 @@ import { Service, ServiceSchema } from '@models/services/service.schema';
     ]),
   ],
   controllers: [ReportsController],
-  providers: [ReportsService],
-  exports: [ReportsService],
+  providers: [ReportsService, ExcelService, PdfService, Neo4jService],
+  exports: [ReportsService, ExcelService],
 })
 export class ReportsModule {}

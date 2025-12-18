@@ -7,10 +7,10 @@ export type DocumentTypeDocument = DocumentType & Document;
 export class DocumentType {
   _id: string;
 
-  @Prop({ required: true, unique: true })
+  @Prop({ required: true })
   name: string;
 
-  @Prop({ required: true, unique: true })
+  @Prop({ required: true })
   code: string;
 
   @Prop({ required: true })
@@ -24,3 +24,8 @@ export class DocumentType {
 }
 
 export const DocumentTypeSchema = SchemaFactory.createForClass(DocumentType);
+
+// Índices para consultas frecuentes
+DocumentTypeSchema.index({ code: 1 }, { unique: true }); // code ya es unique, pero asegurar índice
+DocumentTypeSchema.index({ name: 1 }, { unique: true }); // name ya es unique, pero asegurar índice
+DocumentTypeSchema.index({ isActive: 1 }); // Filtros de tipos de documento activos

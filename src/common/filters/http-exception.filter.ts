@@ -140,6 +140,13 @@ export class HttpExceptionFilter implements ExceptionFilter {
       }),
     };
 
+    // Asegurar que los headers CORS estén presentes en las respuestas de error
+    const origin = request.headers.origin;
+    if (origin && (origin.includes('localhost') || origin.includes('127.0.0.1') || origin.includes('::1'))) {
+      response.header('Access-Control-Allow-Origin', origin);
+      response.header('Access-Control-Allow-Credentials', 'true');
+    }
+    
     response.status(status).json(errorResponse);
   }
 }

@@ -7,7 +7,7 @@ export type UserRoleDocument = UserRole & Document;
 export class UserRole {
   _id: string;
 
-  @Prop({ required: true, unique: true })
+  @Prop({ required: true })
   name: string;
 
   @Prop({ required: true })
@@ -27,3 +27,7 @@ export class UserRole {
 }
 
 export const UserRoleSchema = SchemaFactory.createForClass(UserRole);
+
+// Índices para consultas frecuentes
+UserRoleSchema.index({ name: 1 }, { unique: true }); // name ya es unique, pero asegurar índice
+UserRoleSchema.index({ isActive: 1 }); // Filtros de roles activos

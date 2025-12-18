@@ -113,6 +113,14 @@ export class GuestsService {
     return this.guestModel.findOne({ documentNumber, documentType }).exec();
   }
 
+  async findByPhone(phoneNumber: string): Promise<Guest | null> {
+    return this.guestModel.findOne({ phoneNumber }).exec();
+  }
+
+  async findByEmail(email: string): Promise<Guest | null> {
+    return this.guestModel.findOne({ email }).exec();
+  }
+
   async update(id: string, updateGuestDto: UpdateGuestDto): Promise<Guest | null> {
     return this.guestModel.findByIdAndUpdate(id, updateGuestDto, { new: true }).populate('documentType').exec();
   }

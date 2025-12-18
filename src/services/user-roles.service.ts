@@ -26,6 +26,10 @@ export class UserRolesService {
     return this.userRoleModel.findOne({ name, isActive: true }).exec();
   }
 
+  async findByNameIgnoreActive(name: string): Promise<UserRole | null> {
+    return this.userRoleModel.findOne({ name }).exec();
+  }
+
   async update(id: string, updateUserRoleDto: any): Promise<UserRole | null> {
     return this.userRoleModel.findByIdAndUpdate(id, updateUserRoleDto, { new: true }).exec();
   }
@@ -72,11 +76,37 @@ export class UserRolesService {
             'read_rooms', 'read_room_categories'
           ],
           isActive: true
+        },
+        {
+          name: 'recepcionista',
+          description: 'Recepcionista del hotel con acceso a confirmar reservas',
+          permissions: [
+            'read_reservations', 'update_reservations', 'confirm_reservations',
+            'read_users', 'read_rooms', 'read_guests',
+            'view_reception_dashboard'
+          ],
+          isActive: true
         }
       ];
 
       await this.userRoleModel.insertMany(defaultRoles);
       console.log('✅ Roles por defecto inicializados');
+    } else {
+      // Verificar si el rol recepcionista existe, si no, agregarlo
+      const recepcionistaRole = await this.userRoleModel.findOne({ name: 'recepcionista' });
+      if (!recepcionistaRole) {
+        await this.userRoleModel.create({
+          name: 'recepcionista',
+          description: 'Recepcionista del hotel con acceso a confirmar reservas',
+          permissions: [
+            'read_reservations', 'update_reservations', 'confirm_reservations',
+            'read_users', 'read_rooms', 'read_guests',
+            'view_reception_dashboard'
+          ],
+          isActive: true
+        });
+        console.log('✅ Rol recepcionista agregado');
+      }
     }
   }
 }
